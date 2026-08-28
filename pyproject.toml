@@ -1,0 +1,12 @@
+[project]
+name = "oma-claude-schedule-tests"
+version = "0.1.0"
+description = "Dev-only test harness for the oma-schedule CLI (the app itself has no Python runtime dependency)"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
