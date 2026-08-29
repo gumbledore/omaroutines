@@ -100,22 +100,24 @@ Panel {
     return s.indexOf("~") === 0 ? Quickshell.env("HOME") + s.substring(1) : s
   }
 
-  // "run as" choices: follow settings, force herdr, or pin an installed kind
-  // (a non-claude kind implies herdr, the only backend that runs it).
-  readonly property var agentChoices: [{ value: "default", label: "default agent" }, { value: "herdr", label: "herdr" }]
-    .concat(root.agentKinds.map(function (k) { return { value: "agent:" + k, label: k } }))
+  // Add-form "run as": backend on the left, agent on the right. headless can
+  // only run claude; herdr offers the settings default or any installed kind.
+  // Flags are pinned only when they differ from the defaults so a task added
+  // with the defaults keeps following settings.json.
+  readonly property var backendChoices: [{ value: "headless", label: "headless" }, { value: "herdr", label: "herdr" }]
+  readonly property var agentChoices: addForm.backend === "headless"
+    ? [{ value: "claude", label: "claude" }]
+    : [{ value: "default", label: "default (" + root.defaultAgent + ")" }]
+        .concat(root.agentKinds.map(function (k) { return { value: k, label: k } }))
 
   function submitAdd() {
     var args = ["add", addForm.name.trim(), "--prompt", addForm.prompt, "--cwd", root.expandHome(addForm.cwd),
       "--schedule", addForm.schedule.trim() || "manual", "--worktree", addForm.worktree ? "true" : "false"]
     if (addForm.permissionMode.trim() !== "") args.push("--permission-mode", addForm.permissionMode.trim())
-    var choice = addForm.agentChoice
-    if (choice === "herdr") args.push("--execution", "herdr")
-    else if (choice.indexOf("agent:") === 0) {
-      var kind = choice.substring(6)
-      args.push("--agent", kind)
-      if (kind !== "claude") args.push("--execution", "herdr")
-    }
+    if (addForm.backend !== root.execution) args.push("--execution", addForm.backend)
+    if (addForm.backend === "headless") {
+      if (String(root.scheduleSettings.agent || "") !== "claude") args.push("--agent", "claude")
+    } else if (addForm.agent !== "default") args.push("--agent", addForm.agent)
     root.runAction(root.addKey, args)
   }
 
@@ -308,14 +310,15 @@ Panel {
         readonly property string schedule: scheduleField.text
         readonly property string permissionMode: permField.text
         property bool worktree: true
-        property string agentChoice: "default"
+        property string backend: root.execution
+        property string agent: "default"
         readonly property bool complete: nameField.text.trim() !== "" && promptField.text.trim() !== "" && cwdField.text.trim() !== ""
         readonly property string error: root.rowErrors[root.addKey] || ""
 
         function clear() {
           nameField.text = ""; promptField.text = ""; cwdField.text = ""
           scheduleField.text = "manual"; permField.text = ""; addForm.worktree = true
-          addForm.agentChoice = "default"
+          addForm.backend = root.execution; addForm.agent = "default"
         }
         function submit() { if (addForm.complete && !root.actionBusy) root.submitAdd() }
 
@@ -331,7 +334,22 @@ Panel {
         RowLayout {
           Layout.fillWidth: true
           spacing: Style.space(6)
-          Text { text: "run as"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+          Text { text: "run in"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+          Repeater {
+            model: root.backendChoices
+            delegate: Button {
+              required property var modelData
+              text: modelData.label
+              selected: modelData.value === addForm.backend
+              bordered: true
+              foreground: root.fg
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: { addForm.backend = modelData.value; addForm.agent = "default" }
+            }
+          }
+          Text { text: "as"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption; Layout.leftMargin: Style.space(4) }
           // Flow, not ButtonGroup (a Row): with many kinds installed the
           // chips must wrap instead of widening the panel.
           Flow {
@@ -342,13 +360,13 @@ Panel {
               delegate: Button {
                 required property var modelData
                 text: modelData.label
-                selected: modelData.value === addForm.agentChoice
+                selected: modelData.value === addForm.agent || (addForm.backend === "headless")
                 bordered: true
                 foreground: root.fg
                 accent: root.accent
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
-                onClicked: addForm.agentChoice = modelData.value
+                onClicked: addForm.agent = modelData.value
               }
             }
           }
