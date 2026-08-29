@@ -495,6 +495,14 @@ validate_agent_fields() {
   return 0
 }
 
+# worktree=true needs a git repo to run `git worktree add` in.
+require_git_repo() {
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "omaroutines: --cwd \"$1\" is not a git repository (required when --worktree true)" >&2
+    return 1
+  }
+}
+
 cmd_add() {
   local name="${1:-}"
   shift || true
@@ -559,6 +567,7 @@ cmd_add() {
     echo "omaroutines: --cwd \"$cwd\" is not a directory" >&2
     return 1
   }
+  [[ $worktree == true ]] && { require_git_repo "$cwd" || return 1; }
 
   ensure_store
   if task_exists "$name"; then
@@ -667,6 +676,14 @@ cmd_edit() {
       echo "omaroutines: --cwd \"$cwd\" is not a directory" >&2
       return 1
     }
+  fi
+  if ((set_cwd || set_worktree)); then
+    local eff_cwd eff_wt
+    eff_cwd=$(jq -r --arg n "$name" '.tasks[] | select(.name == $n) | .cwd' "$TASKS")
+    eff_wt=$(jq -r --arg n "$name" '.tasks[] | select(.name == $n) | .worktree' "$TASKS")
+    ((set_cwd)) && eff_cwd="$cwd"
+    ((set_worktree)) && eff_wt="$worktree"
+    [[ $eff_wt == true ]] && { require_git_repo "$eff_cwd" || return 1; }
   fi
 
   local normalized="" next_due_json="null" have_next_due=0

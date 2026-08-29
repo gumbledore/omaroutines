@@ -8,6 +8,7 @@ deterministic regardless of the host's local timezone.
 
 import concurrent.futures
 import json
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -336,6 +337,7 @@ def test_edit_prompt_and_cwd(cli, state_home, cwd_dir, tmp_path):
     cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir))
     new_dir = tmp_path / "elsewhere"
     new_dir.mkdir()
+    subprocess.run(["git", "init", "-q", str(new_dir)], check=True, capture_output=True)
     r = cli("edit", "t1", "--prompt", "new prompt", "--cwd", str(new_dir))
     assert r.returncode == 0, r.stderr
     t = task_by_name(state_home, "t1")
@@ -356,3 +358,33 @@ def test_edit_rejects_unknown_permission_mode(cli, state_home, cwd_dir):
     assert r.returncode == 1
     assert "invalid permission mode" in r.stderr
     assert task_by_name(state_home, "t1")["permission_mode"] is None
+
+
+def test_add_worktree_requires_git_repo(cli, state_home, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(plain))
+    assert r.returncode != 0
+    assert "not a git repository" in r.stderr
+    assert not (state_home / "omaroutines" / "tasks.json").exists()
+    # worktree=false does not need a repo
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(plain), "--worktree", "false")
+    assert r.returncode == 0, r.stderr
+
+
+def test_edit_worktree_requires_git_repo(cli, state_home, cwd_dir, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    cli("add", "t1", "--prompt", "hi", "--cwd", str(plain), "--worktree", "false")
+    # turning worktree on while cwd is not a repo
+    r = cli("edit", "t1", "--worktree", "true")
+    assert r.returncode != 0 and "not a git repository" in r.stderr
+    assert task_by_name(state_home, "t1")["worktree"] is False
+    # moving a worktree task to a non-repo cwd
+    cli("add", "t2", "--prompt", "hi", "--cwd", str(cwd_dir))
+    r = cli("edit", "t2", "--cwd", str(plain))
+    assert r.returncode != 0 and "not a git repository" in r.stderr
+    assert task_by_name(state_home, "t2")["cwd"] == str(cwd_dir.resolve())
+    # both at once, consistent, is fine
+    r = cli("edit", "t2", "--cwd", str(plain), "--worktree", "false")
+    assert r.returncode == 0, r.stderr

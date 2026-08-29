@@ -57,8 +57,10 @@ def state_home(tmp_path):
 
 @pytest.fixture
 def cwd_dir(tmp_path):
+    """Task --cwd; a git repo since add defaults to worktree=true."""
     d = tmp_path / "work"
     d.mkdir()
+    subprocess.run(["git", "init", "-q", str(d)], check=True, capture_output=True)
     return d
 
 
