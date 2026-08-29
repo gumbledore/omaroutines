@@ -1,0 +1,13 @@
+[Unit]
+Description=Background herdr session for oma-schedule runs
+
+[Service]
+# A named session = its own socket + state under ~/.config/herdr/sessions/;
+# scheduled agents never appear in the foreground session. Started (and
+# enabled) by `oma-schedule` on the first herdr run, then left running.
+ExecStart=herdr server
+Environment=HERDR_SESSION=oma-schedule
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

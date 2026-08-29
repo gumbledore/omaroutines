@@ -14,7 +14,10 @@ RowLayout {
   required property var run
 
   readonly property bool running: run.status === "running"
-  readonly property bool canResume: !running && run.session_available === true
+  readonly property bool herdr: run.backend === "herdr"
+  readonly property bool blocked: run.reason === "blocked"
+  // Resume (headless: claude --resume) or Attach (herdr: open the pane)
+  readonly property bool canResume: !running && (herdr ? run.pane_available === true : run.session_available === true)
   readonly property bool hasLog: run.log_path !== null && run.log_path !== undefined
 
   spacing: Style.space(6)
@@ -27,12 +30,12 @@ RowLayout {
     Layout.preferredWidth: Style.space(28)
   }
   Text {
-    text: runRow.run.status
+    text: runRow.run.status + (runRow.run.reason ? " · " + runRow.run.reason : "")
     color: Format.statusColor(runRow.run.status, runRow.row.accent, runRow.row.urgent, runRow.row.muted)
     font.family: runRow.row.fontFamily
     font.pixelSize: runRow.row.capSize
     font.bold: runRow.run.status === "failure"
-    Layout.preferredWidth: Style.space(48)
+    Layout.preferredWidth: Style.space(runRow.run.reason ? 78 : 48)
   }
   Text {
     Layout.fillWidth: true
@@ -57,11 +60,11 @@ RowLayout {
     iconText: "󰆍"
     size: Style.space(18)
     fontSize: runRow.row.capSize
-    foreground: runRow.row.muted
-    hoverColor: runRow.row.accent
+    foreground: runRow.blocked && runRow.canResume ? runRow.row.urgent : runRow.row.muted
+    hoverColor: runRow.blocked ? runRow.row.urgent : runRow.row.accent
     enabled: runRow.canResume && !runRow.row.anyBusy
     tooltipText: runRow.row.resumeTooltip(runRow.run)
-    onClicked: runRow.row.act(["resume", String(runRow.run.id), "--terminal"])
+    onClicked: runRow.row.act([runRow.herdr ? "attach" : "resume", String(runRow.run.id), "--terminal"])
   }
   PanelActionButton {
     iconText: "󰈙"

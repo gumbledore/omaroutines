@@ -16,20 +16,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SHELL_DIR = Path("/usr/share/omarchy/shell")
 
 PAYLOAD = {
-    "count": 2,
+    "count": 3,
     "tasks": [
+        {"name": "watch", "prompt": "watch", "cwd": "/tmp", "schedule": "manual",
+         "permission_mode": None, "worktree": False, "enabled": True, "next_due": None,
+         "backlog_since": None, "created": 1756400000, "next_due_text": "-",
+         "agent": "codex", "agent_source": "settings", "execution": "herdr",
+         "last_run": {"id": 5, "status": "failure", "trigger": "manual", "start": 1756700000,
+                      "end": 1756700100, "session_available": False, "backend": "herdr", "reason": "blocked",
+                      "pane_id": "w1:p2", "pane_available": False}},
         {"name": "lint", "prompt": "lint", "cwd": "/tmp", "schedule": "Mon *-*-* 09:00:00",
          "permission_mode": None, "worktree": True, "enabled": True, "next_due": 1756716400,
          "backlog_since": None, "created": 1756400000, "next_due_text": "Mon 1 Sep 09:00",
+         "agent": "claude", "agent_source": "omarchy", "execution": "headless",
          "last_run": {"id": 3, "status": "failure", "trigger": "scheduled", "start": 1756700000,
-                      "end": 1756700100, "session_available": True}},
+                      "end": 1756700100, "session_available": True, "backend": "headless", "reason": None,
+                      "pane_id": None, "pane_available": False}},
         {"name": "manual-one", "prompt": "x", "cwd": "/tmp", "schedule": "manual",
          "permission_mode": None, "worktree": False, "enabled": False, "next_due": None,
-         "backlog_since": None, "created": 1756400000, "next_due_text": "-", "last_run": None},
+         "backlog_since": None, "created": 1756400000, "next_due_text": "-",
+         "agent": "codex", "agent_source": "task", "execution": "herdr", "last_run": None},
     ],
-    "enabled": 1, "failed": 1, "running": 0, "backlog": 0, "badge": 1, "active": True,
+    "enabled": 2, "failed": 2, "running": 0, "backlog": 0, "badge": 2, "active": True,
     "next": {"task": "lint", "next_due": 1756716400, "next_due_text": "Mon 1 Sep 09:00"},
-    "tooltip": "Next: lint Mon 1 Sep 09:00 · 1 failed",
+    "tooltip": "Next: lint Mon 1 Sep 09:00 · 2 failed",
 }
 
 
@@ -70,9 +80,15 @@ def test_widget_parses_contract_and_panel_compiles(tmp_path):
     r = run_harness(tmp_path, REPO_ROOT)
     out = r.stdout + r.stderr
     assert "SMOKE PASS" in out, out
-    assert "TASKS 2" in out
-    assert "TOOLTIP Next: lint Mon 1 Sep 09:00" in out and "1 failed" in out  # console.log escapes "·"
-    assert "BADGE 1" in out
+    assert "TASKS 3" in out
+    assert "TOOLTIP Next: lint Mon 1 Sep 09:00" in out and "2 failed" in out  # console.log escapes "·"
+    assert "BADGE 2" in out
+    # Attach/Resume contract, instantiated against the payload (not just compiled)
+    assert "TASKROW watch herdr=true blocked=true canResume=false tip=Pane no longer available" in out
+    assert "RUNROW watch herdr=true blocked=true canResume=false" in out
+    assert "TASKROW lint herdr=false blocked=false canResume=true tip=Resume run #3 in a terminal" in out
+    assert "RUNROW lint herdr=false blocked=false canResume=true" in out
+    assert "TASKROW manual-one herdr=false blocked=false canResume=false tip=No run yet" in out
     assert r.returncode == 0
 
 
@@ -84,5 +100,5 @@ def test_qml_syntax_error_fails(tmp_path):
     r = run_harness(tmp_path, broken)
     out = r.stdout + r.stderr
     assert "SMOKE PASS" not in out
-    assert "COMPILE ERROR panel/TaskRow.qml" in out
+    assert "COMPILE ERROR panel/TaskRow.qml" in out or "ROW ERROR TaskRow" in out
     assert r.returncode != 0

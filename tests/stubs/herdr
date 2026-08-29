@@ -1,0 +1,75 @@
+#!/bin/bash
+# herdr stub for tests. State in $STUB_DIR: workspaces.json, panes.json,
+# agents.json; every invocation (+ the HERDR_SESSION it saw) is appended to
+# $STUB_LOG. Control files in $STUB_DIR:
+#   herdr-down       server not running (the systemctl stub's `start` removes it)
+#   start-outcome    blocked | taken   (agent start: blocked at startup / name taken once)
+#   prompt-outcome   done | idle | blocked | working | vanish   (default done)
+#   list-fail        `workspace list` / `agent list` exit 124 (query timeout)
+set -euo pipefail
+printf 'herdr %s [HERDR_SESSION=%s]\n' "$*" "${HERDR_SESSION-<unset>}" >>"$STUB_LOG"
+[[ $# -eq 0 ]] && { echo "ATTACHED default"; exit 0; }
+ws="$STUB_DIR/workspaces.json"; panes="$STUB_DIR/panes.json"; agents="$STUB_DIR/agents.json"
+[[ -f $ws ]] || echo '[]' >"$ws"; [[ -f $panes ]] || echo '[]' >"$panes"; [[ -f $agents ]] || echo '[]' >"$agents"
+save() { jq -c "$2" "$1" >"$1.t" && mv "$1.t" "$1"; }
+
+if [[ "$1 $2" == "status server" ]]; then
+  if [[ -e $STUB_DIR/herdr-down ]]; then echo '{"status":"not_running","running":false}'; else echo '{"status":"running","running":true}'; fi
+  exit 0
+fi
+[[ -e $STUB_DIR/herdr-down ]] && { echo '{"error":{"code":"server_not_running","message":"no herdr server is running"}}' >&2; exit 1; }
+
+[[ -e $STUB_DIR/list-fail && ( "$1 $2" == "workspace list" || "$1 $2" == "agent list" ) ]] && exit 124
+case "$1 $2" in
+  "workspace list") jq -c '{result:{type:"workspace_list",workspaces:.}}' "$ws" ;;
+  "pane list") jq -c '{result:{type:"pane_list",panes:.}}' "$panes" ;;
+  "agent list") jq -c '{result:{type:"agent_list",agents:.}}' "$agents" ;;
+  "workspace create")
+    shift 2; cwd=""; label=""
+    while (($#)); do case "$1" in --cwd) cwd=$2; shift 2 ;; --label) label=$2; shift 2 ;; *) shift ;; esac; done
+    id="w$(( $(jq length "$ws") + 1 ))"
+    save "$ws" ". + [{workspace_id:\"$id\",label:\"$label\"}]"
+    save "$panes" ". + [{pane_id:\"$id:p1\",tab_id:\"$id:t1\",workspace_id:\"$id\",cwd:\"$cwd\",agent_status:\"unknown\"}]"
+    printf '{"result":{"type":"workspace_created","workspace":{"workspace_id":"%s"},"tab":{"tab_id":"%s:t1"},"root_pane":{"pane_id":"%s:p1"}}}\n' "$id" "$id" "$id" ;;
+  "tab create")
+    shift 2; wsid=""; cwd=""
+    while (($#)); do case "$1" in --workspace) wsid=$2; shift 2 ;; --cwd) cwd=$2; shift 2 ;; *) shift ;; esac; done
+    n=$(( $(jq --arg w "$wsid" '[.[] | select(.workspace_id==$w)] | length' "$panes") + 1 ))
+    save "$panes" ". + [{pane_id:\"$wsid:p$n\",tab_id:\"$wsid:t$n\",workspace_id:\"$wsid\",cwd:\"$cwd\",agent_status:\"unknown\"}]"
+    printf '{"result":{"type":"tab_created","tab":{"tab_id":"%s:t%s"},"root_pane":{"pane_id":"%s:p%s"}}}\n' "$wsid" "$n" "$wsid" "$n" ;;
+  "tab close")
+    save "$agents" "map(select(.tab_id != \"$3\"))"
+    save "$panes" "map(select(.tab_id != \"$3\"))"
+    echo '{"result":{"type":"ok"}}' ;;
+  "agent start")
+    name=$3; shift 3; kind=""; pane=""
+    while (($#)); do case "$1" in --kind) kind=$2; shift 2 ;; --pane) pane=$2; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+    printf '%s\n' "$@" >"$STUB_DIR/start-args.$name"
+    outcome=$(cat "$STUB_DIR/start-outcome" 2>/dev/null || true)
+    if [[ $outcome == taken ]]; then rm "$STUB_DIR/start-outcome"; echo '{"error":{"code":"agent_name_taken"}}' >&2; exit 1; fi
+    tab=$(jq -r --arg p "$pane" '.[] | select(.pane_id==$p) | .tab_id' "$panes")
+    st=idle; [[ $outcome == blocked ]] && st=blocked
+    save "$agents" ". + [{name:\"$name\",agent:\"$kind\",pane_id:\"$pane\",tab_id:\"$tab\",agent_status:\"$st\"}]"
+    if [[ $st == blocked ]]; then echo "{\"error\":{\"code\":\"agent_not_ready\",\"message\":\"agent $name is blocked during startup\"}}" >&2; exit 1; fi
+    printf '{"result":{"type":"agent_started","agent":{"name":"%s","agent_status":"idle","pane_id":"%s"}}}\n' "$name" "$pane" ;;
+  "agent prompt")
+    name=$3; text=$4
+    jq -e --arg n "$name" '.[] | select(.name==$n)' "$agents" >/dev/null || { echo '{"error":{"code":"agent_not_found","message":"agent target not found"}}' >&2; exit 1; }
+    printf '%s\n' "$text" >"$STUB_DIR/prompt.$name"
+    printf '%s\n' "${@:5}" >"$STUB_DIR/prompt-args.$name"
+    outcome=$(cat "$STUB_DIR/prompt-outcome" 2>/dev/null || echo done)
+    case $outcome in
+      vanish) save "$agents" "map(select(.name != \"$name\"))"; save "$panes" "map(select(.pane_id != \"$(jq -r --arg n "$name" '.[] | select(.name==$n) | .pane_id' "$agents")\"))"
+              echo '{"error":{"code":"agent_not_found","message":"agent target not found"}}' >&2; exit 1 ;;
+      working) save "$agents" "map(if .name==\"$name\" then .agent_status=\"working\" else . end)"
+               echo '{"error":{"code":"timeout","message":"timed out waiting for agent status"}}' >&2; exit 1 ;;
+      *) save "$agents" "map(if .name==\"$name\" then .agent_status=\"$outcome\" else . end)"
+         printf '{"result":{"type":"agent_prompted","agent":{"name":"%s","agent_status":"%s"}}}\n' "$name" "$outcome" ;;
+    esac ;;
+  "agent read")
+    jq -e --arg n "$3" '.[] | select(.name==$n)' "$agents" >/dev/null || { echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1; }
+    echo "TRANSCRIPT of $3" ;;
+  "agent focus") echo '{"result":{"type":"agent_info"}}' ;;
+  "session attach") echo "ATTACHED $3" ;;
+  *) echo "herdr stub: unhandled $*" >&2; exit 1 ;;
+esac

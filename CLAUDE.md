@@ -19,9 +19,14 @@ native trigger, run log, and UI, built on the same primitives as this machine's
 
 - `docs/design.md` — source of truth for scope and architecture
 - `bin/oma-schedule` — the CLI, sole writer of `~/.local/state/oma-schedule/{tasks,runs}.json`
-- `systemd/` — `oma-schedule-sweep.{timer,service}` (every-minute sweep)
+  and `~/.config/oma-schedule/settings.json`
+- `defaults/settings.json` — shipped settings (execution backend, agent, herdr knobs), merged on read
+- `systemd/` — `oma-schedule-sweep.{timer,service}` (every-minute sweep) and
+  `oma-schedule-herdr.service` (background herdr session, started on the first herdr run)
 - `manifest.json`, `BarWidget.qml`, `Panel.qml`, `panel/`, `install.sh` — Omarchy plugin packaging, bar widget, and its popup task panel
-- `tests/` — pytest suite driving the CLI as a subprocess, plus a headless QML smoke test (`tests/qml/`)
+- `tests/` — pytest suite driving the CLI as a subprocess (fake claude/herdr/systemctl in
+  `tests/conftest.py` + `tests/stubs/`), a headless QML smoke test (`tests/qml/`), and an
+  opt-in real-herdr integration test
 
 ## How to run
 
@@ -38,3 +43,6 @@ native trigger, run log, and UI, built on the same primitives as this machine's
   only for the test suite).
 - Bar widget + bar-anchored panel (omagit/omaplug pattern); `oma-schedule
   show-overlay` summons it via `omarchy-shell shell summon`.
+- Two backends: `headless` (`claude -p`, claude only) and `herdr` (live agent
+  of any supported kind in the hidden `oma-schedule` herdr session; Attach
+  instead of Resume). Agent kind resolves task → settings → `omarchy-default-agent`.

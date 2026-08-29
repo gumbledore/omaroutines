@@ -103,7 +103,7 @@ def test_list_last_run_session_available_tracks_session_file(cli, state_home, cw
     run = runs_for(state_home, "t1")[0]
     lr = listing(cli)["tasks"][0]["last_run"]
     assert lr["session_available"] is True
-    assert set(lr) == {"id", "status", "trigger", "start", "end", "session_available"}
+    assert set(lr) == {"id", "status", "trigger", "start", "end", "session_available", "backend", "reason", "pane_id", "pane_available"}
 
     session_file(claude_home, run).unlink()
     assert listing(cli)["tasks"][0]["last_run"]["session_available"] is False

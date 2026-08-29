@@ -54,7 +54,7 @@ def test_last_run_null_then_newest(cli, state_home, cwd_dir):
     assert lr["status"] == "failure"
     assert lr["trigger"] == "manual"
     assert isinstance(lr["start"], int) and isinstance(lr["end"], int)
-    assert set(lr) == {"id", "status", "trigger", "start", "end", "session_available"}
+    assert set(lr) == {"id", "status", "trigger", "start", "end", "session_available", "backend", "reason", "pane_id", "pane_available"}
 
 
 def test_failed_run_sets_badge_and_tooltip(cli, state_home, cwd_dir):

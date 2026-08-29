@@ -16,6 +16,7 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins"
 PLUGIN_ID="kmg.oma-claude-schedule"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/oma-schedule"
+SYSTEMCTL="${OMA_SCHEDULE_SYSTEMCTL_BIN:-systemctl}" # stubbed in tests
 
 say() { printf '  %s\n' "$*"; }
 
@@ -25,22 +26,27 @@ say() { printf '  %s\n' "$*"; }
 # the plugin folder and leave the timer firing a dead symlink every minute.
 
 if [[ ${1:-} == --uninstall ]]; then
-  systemctl --user disable --now oma-schedule-sweep.timer 2>/dev/null || true
-  rm -f "$UNIT_DIR/oma-schedule-sweep.timer" "$UNIT_DIR/oma-schedule-sweep.service"
-  systemctl --user daemon-reload
-  say "disabled and removed oma-schedule-sweep.timer"
+  "$SYSTEMCTL" --user disable --now oma-schedule-sweep.timer 2>/dev/null || true
+  "$SYSTEMCTL" --user disable --now oma-schedule-herdr.service 2>/dev/null || true
+  rm -f "$UNIT_DIR/oma-schedule-sweep.timer" "$UNIT_DIR/oma-schedule-sweep.service" "$UNIT_DIR/oma-schedule-herdr.service"
+  "$SYSTEMCTL" --user daemon-reload
+  say "disabled and removed oma-schedule-sweep.timer and oma-schedule-herdr.service"
   [[ -L $BIN_DIR/oma-schedule ]] && rm -f "$BIN_DIR/oma-schedule" && say "removed $BIN_DIR/oma-schedule"
   [[ -L $PLUGIN_DIR/$PLUGIN_ID ]] && rm -f "$PLUGIN_DIR/$PLUGIN_ID" && say "removed $PLUGIN_DIR/$PLUGIN_ID"
   if command -v omarchy-shell >/dev/null; then
     omarchy-shell shell rescanPlugins >/dev/null 2>&1 || say "NOTE: plugin rescan failed; run: omarchy restart shell"
   fi
   say "kept state in $STATE_DIR (delete it yourself if you want a clean slate)"
+  say "kept the herdr session (agent transcripts) in ${XDG_CONFIG_HOME:-$HOME/.config}/herdr/sessions/oma-schedule"
+  say "  remove it with: herdr session stop oma-schedule; herdr session delete oma-schedule"
   exit 0
 fi
 
-for dep in jq systemd-analyze claude uuidgen; do
+for dep in jq systemd-analyze uuidgen; do
   command -v "$dep" >/dev/null || { echo "install.sh: $dep is required" >&2; exit 1; }
 done
+command -v claude >/dev/null || say "NOTE: claude not found — headless runs need it"
+command -v herdr >/dev/null || say "NOTE: herdr not found — herdr runs need it"
 
 mkdir -p "$BIN_DIR" "$UNIT_DIR" "$STATE_DIR" "$PLUGIN_DIR"
 
@@ -62,9 +68,13 @@ esac
 
 ln -sfn "$REPO_DIR/systemd/oma-schedule-sweep.service" "$UNIT_DIR/oma-schedule-sweep.service"
 ln -sfn "$REPO_DIR/systemd/oma-schedule-sweep.timer" "$UNIT_DIR/oma-schedule-sweep.timer"
-systemctl --user daemon-reload
-systemctl --user enable --now oma-schedule-sweep.timer
+# The background herdr server is installed but not enabled: the first herdr
+# run starts + enables it.
+ln -sfn "$REPO_DIR/systemd/oma-schedule-herdr.service" "$UNIT_DIR/oma-schedule-herdr.service"
+"$SYSTEMCTL" --user daemon-reload
+"$SYSTEMCTL" --user enable --now oma-schedule-sweep.timer
 say "enabled oma-schedule-sweep.timer (fires due tasks every minute)"
+say "installed oma-schedule-herdr.service (started on the first herdr run)"
 
 # --- the shell plugin (bar widget) ------------------------------------------
 

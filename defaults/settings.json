@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "execution": "headless",
+  "agent": null,
+  "herdr_session": "oma-schedule",
+  "herdr_retain": 3,
+  "herdr_timeout_minutes": 60
+}

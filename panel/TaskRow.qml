@@ -26,7 +26,10 @@ Item {
   readonly property bool anyBusy: panel.actionBusy
   readonly property bool armed: panel.armedRemove === name
   readonly property string error: panel.rowErrors[name] || ""
-  readonly property bool canResume: lastRun !== null && !running && lastRun.session_available === true
+  readonly property bool lastHerdr: lastRun !== null && lastRun.backend === "herdr"
+  readonly property bool lastBlocked: lastRun !== null && lastRun.reason === "blocked"
+  readonly property bool canResume: lastRun !== null && !running
+    && (lastHerdr ? lastRun.pane_available === true : lastRun.session_available === true)
 
   readonly property color fg: panel.fg
   readonly property color muted: panel.muted
@@ -45,6 +48,10 @@ Item {
   function resumeTooltip(run) {
     if (!run) return "No run yet"
     if (run.status === "running") return "Still running"
+    if (run.backend === "herdr") {
+      if (run.pane_available !== true) return "Pane no longer available"
+      return (run.reason === "blocked" ? "Blocked — attach to answer run #" : "Attach to run #") + run.id + " in a terminal"
+    }
     if (run.session_available !== true) return "Session no longer available"
     return "Resume run #" + run.id + " in a terminal"
   }
@@ -158,7 +165,7 @@ Item {
           Text {
             text: !row.lastRun ? ""
               : row.running ? "running since " + Format.clock(row.lastRun.start)
-              : row.lastStatus + " " + Format.clock(row.lastRun.end) + " · " + row.lastRun.trigger
+              : row.lastStatus + (row.lastRun.reason ? " · " + row.lastRun.reason : "") + " " + Format.clock(row.lastRun.end) + " · " + row.lastRun.trigger
             color: row.fg
             font.family: row.fontFamily
             font.pixelSize: row.capSize
@@ -204,11 +211,11 @@ Item {
         iconText: "󰆍"
         size: Style.space(20)
         fontSize: row.capSize
-        foreground: row.muted
-        hoverColor: row.accent
+        foreground: row.lastBlocked && row.canResume ? row.urgent : row.muted
+        hoverColor: row.lastBlocked ? row.urgent : row.accent
         enabled: row.canResume && !row.anyBusy
         tooltipText: row.resumeTooltip(row.lastRun)
-        onClicked: row.act(["resume", String(row.lastRun.id), "--terminal"])
+        onClicked: row.act([row.lastHerdr ? "attach" : "resume", String(row.lastRun.id), "--terminal"])
       }
       Button {
         iconText: "󰆴"
@@ -248,6 +255,7 @@ Item {
       Text {
         Layout.fillWidth: true
         text: row.task.cwd + (row.task.worktree ? "  ·  worktree" : "  ·  no worktree")
+          + "  ·  " + (row.task.agent || "no agent") + " · " + (row.task.execution || "headless")
           + (row.task.permission_mode ? "  ·  " + row.task.permission_mode : "")
         color: row.muted
         font.family: row.fontFamily

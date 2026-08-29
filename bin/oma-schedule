@@ -19,7 +19,22 @@ NOTIFY_BIN="${OMA_SCHEDULE_NOTIFY_BIN:-omarchy-notification-send}"
 BACKLOG_TIMEOUT="${OMA_SCHEDULE_BACKLOG_TIMEOUT:-900}"
 CLAUDE_HOME="${OMA_SCHEDULE_CLAUDE_HOME:-$HOME/.claude}"
 TERMINAL_BIN="${OMA_SCHEDULE_TERMINAL_BIN:-xdg-terminal-exec}"
+DEFAULT_AGENT_BIN="${OMA_SCHEDULE_DEFAULT_AGENT_BIN:-omarchy-default-agent}"
+HERDR_BIN="${OMA_SCHEDULE_HERDR_BIN:-herdr}"
+SYSTEMCTL_BIN="${OMA_SCHEDULE_SYSTEMCTL_BIN:-systemctl}"
+HERDR_UNIT="oma-schedule-herdr.service"
+HERDR_START_WAIT="${OMA_SCHEDULE_HERDR_START_WAIT:-20}" # seconds to wait for the socket
+HERDR_QUICK=10                                          # seconds for list/read style calls
+HERDR_MUTATE=180                                        # seconds for create/start/close calls
+HERDR_AGENT_START_MS=120000                             # herdr-side cap on agent readiness
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/oma-schedule"
+SETTINGS="$CONFIG_DIR/settings.json"
+DEFAULTS="$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/../defaults/settings.json"
 RETAIN_RUNS=20
+# omarchy agent kinds we accept (omarchy-agent's list minus crush, which has no
+# headless path and is not a herdr kind). Headless runs claude only.
+AGENT_KINDS="pi omp opencode claude codex grok gemini copilot"
+EXECUTIONS="headless herdr"
 # Claude Code --permission-mode values we will pass through. Anything else is
 # rejected at add/edit and again at run time (settings.json fallback included).
 PERM_MODES="default acceptEdits plan dontAsk bypassPermissions auto"
@@ -143,7 +158,332 @@ available_sessions_json() {
     sed 's/\.jsonl$//' | jq -R . | jq -sc .
 }
 
+# --- settings ------------------------------------------------------------------
+
+# Merged settings JSON: shipped defaults ⊕ user file, schema_version always the
+# shipped one (omagit-config semantics). Missing keys are written back; a file
+# that is not JSON is left alone and defaults are used with a warning.
+settings_json() {
+  local defaults user merged
+  defaults=$(jq -c . "$DEFAULTS")
+  if [[ -f $SETTINGS ]]; then
+    if ! user=$(jq -c . "$SETTINGS" 2>/dev/null); then
+      echo "oma-schedule: $SETTINGS is not valid JSON, using defaults until it is fixed" >&2
+      echo "$defaults"
+      return 0
+    fi
+    merged=$(jq -c -s '.[0].schema_version as $v | .[0] * .[1] | .schema_version = $v' <<<"$defaults"$'\n'"$user")
+    [[ $merged == "$user" ]] || write_settings "$merged"
+    echo "$merged"
+  else
+    write_settings "$defaults"
+    echo "$defaults"
+  fi
+}
+
+write_settings() {
+  mkdir -p "$CONFIG_DIR"
+  local tmp
+  tmp=$(mktemp "$CONFIG_DIR/.settings.json.XXXXXX")
+  jq . <<<"$1" >"$tmp" && mv "$tmp" "$SETTINGS"
+}
+
+setting() { settings_json | jq -r --arg k "$1" '.[$k] // empty'; }
+
+validate_agent() {
+  [[ " $AGENT_KINDS " == *" $1 "* ]] || {
+    echo "oma-schedule: unsupported agent \"$1\" (allowed: ${AGENT_KINDS// /, })" >&2
+    return 1
+  }
+}
+
+validate_execution() {
+  [[ " $EXECUTIONS " == *" $1 "* ]] || {
+    echo "oma-schedule: invalid execution \"$1\" (allowed: ${EXECUTIONS// /, })" >&2
+    return 1
+  }
+}
+
+# Resolve the agent kind: task override -> settings -> omarchy default. Prints
+# "<kind>|<source>" where source is task|settings|omarchy|none ("" kind = none).
+resolve_agent() {
+  local task_agent="$1" kind
+  if [[ -n $task_agent ]]; then
+    echo "$task_agent|task"
+    return
+  fi
+  kind=$(setting agent)
+  if [[ -n $kind ]]; then
+    echo "$kind|settings"
+    return
+  fi
+  kind=$("$DEFAULT_AGENT_BIN" 2>/dev/null) || kind=""
+  if [[ -n $kind ]]; then
+    echo "$kind|omarchy"
+  else
+    echo "|none"
+  fi
+}
+
+resolve_execution() {
+  local task_exec="$1"
+  [[ -n $task_exec ]] && { echo "$task_exec"; return; }
+  setting execution
+}
+
+# The only backend/agent combination we refuse: headless with a non-claude
+# kind. Used at add/edit/settings set and again at fire time.
+check_combo() {
+  local kind="$1" source="$2" execution="$3"
+  [[ -z $kind || $execution != headless || $kind == claude ]] && return 0
+  echo "oma-schedule: headless execution supports claude only (agent \"$kind\" comes from $source); use --execution herdr or --agent claude" >&2
+  return 1
+}
+
+# --- herdr ---------------------------------------------------------------------
+
+# Session name from settings. hd() mostly runs inside $(...), where a cache
+# assignment would be lost, so entry points that make several herdr calls
+# set HERDR_SESSION_NAME once up front (see cache_herdr_session).
+herdr_session() {
+  [[ -n ${HERDR_SESSION_NAME:-} ]] && echo "$HERDR_SESSION_NAME" || setting herdr_session
+}
+cache_herdr_session() { HERDR_SESSION_NAME=$(setting herdr_session); }
+
+# Run herdr against the configured session. HERDR_SOCKET_PATH/HERDR_ENV are
+# scrubbed: inherited from a herdr pane they override HERDR_SESSION and point
+# at the foreground server. "default" means the foreground session.
+hd() {
+  local session
+  session=$(herdr_session)
+  if [[ $session == default ]]; then
+    env -u HERDR_SESSION -u HERDR_SOCKET_PATH -u HERDR_ENV "$HERDR_BIN" "$@"
+  else
+    env -u HERDR_SOCKET_PATH -u HERDR_ENV HERDR_SESSION="$session" "$HERDR_BIN" "$@"
+  fi
+}
+
+# Bounded variants (a hung server must not hang `list` or strand a run):
+# re-enter this script so `timeout` wraps hd(); the `_herdr` entry execs
+# herdr, so the signal reaches it rather than an orphaned child.
+HERDR_BIN_WRAP="$(realpath -- "${BASH_SOURCE[0]}")"
+hdq() { timeout "$HERDR_QUICK" "$HERDR_BIN_WRAP" _herdr "$@"; }
+hdm() { timeout "$HERDR_MUTATE" "$HERDR_BIN_WRAP" _herdr "$@"; }
+hd_exec() {
+  local session
+  session=$(herdr_session)
+  if [[ $session == default ]]; then
+    exec env -u HERDR_SESSION -u HERDR_SOCKET_PATH -u HERDR_ENV "$HERDR_BIN" "$@"
+  else
+    exec env -u HERDR_SOCKET_PATH -u HERDR_ENV HERDR_SESSION="$session" "$HERDR_BIN" "$@"
+  fi
+}
+
+herdr_server_up() {
+  hdq status server --json 2>/dev/null | jq -e '.running == true' >/dev/null 2>&1
+}
+
+# Start + enable the background unit if the server is down, then wait for the
+# socket. The foreground ("default") session is never started by us.
+ensure_herdr_server() {
+  herdr_server_up && return 0
+  if [[ $(herdr_session) == default ]]; then
+    echo "oma-schedule: herdr server is not running (herdr_session is \"default\": start herdr first)" >&2
+    return 1
+  fi
+  "$SYSTEMCTL_BIN" --user start "$HERDR_UNIT" || {
+    echo "oma-schedule: could not start $HERDR_UNIT (run install.sh?)" >&2
+    return 1
+  }
+  "$SYSTEMCTL_BIN" --user enable "$HERDR_UNIT" >/dev/null 2>&1 || true
+  local deadline=$((SECONDS + HERDR_START_WAIT))
+  while ((SECONDS < deadline)); do
+    herdr_server_up && return 0
+    sleep 0.25
+  done
+  echo "oma-schedule: herdr server did not come up within ${HERDR_START_WAIT}s" >&2
+  return 1
+}
+
+# JSON array of live pane ids ([] when the server is down / unreachable).
+live_panes_json() {
+  local out
+  out=$(hdq pane list 2>/dev/null) && jq -c '[.result.panes[].pane_id]' <<<"$out" 2>/dev/null && return 0
+  echo '[]'
+}
+
+# Unattended flags per agent kind, copied from omarchy-agent (keep in sync).
+unattended_flags() {
+  case "$1" in
+  claude) echo "--permission-mode auto" ;;
+  codex) echo "--approve-for-me" ;;
+  gemini) echo "--yolo" ;;
+  opencode) echo "--auto" ;;
+  copilot) echo "--allow-all" ;;
+  omp) echo "--auto-approve" ;;
+  grok) echo "--permission-mode bypassPermissions" ;;
+  *) echo "" ;;
+  esac
+}
+
+# Agent lifecycle state by name via `agent list`; "" when absent.
+herdr_agent_state() {
+  hdq agent list 2>/dev/null | jq -r --arg n "$1" '.result.agents[] | select(.name == $n) | .agent_status' 2>/dev/null | head -1
+}
+
+# Map an observed state to "<status>|<reason>" per the spec.
+map_agent_state() {
+  case "$1" in
+  done | idle) echo "success|" ;;
+  blocked) echo "failure|blocked" ;;
+  working) echo "failure|timeout" ;;
+  *) echo "failure|exited" ;;
+  esac
+}
+
+# Run one task under herdr: workspace by cwd label, new unfocused tab, agent
+# start with unattended flags, prompt --wait, settle -> status/reason,
+# transcript snapshot. Sets HERDR_RESULT="status|reason", HERDR_PANE,
+# HERDR_TAB, HERDR_WS. Everything it prints goes to the run log.
+herdr_run() {
+  local name="$1" run_id="$2" kind="$3" prompt="$4" cwd="$5" run_dir="$6" timeout_s="$7"
+  HERDR_RESULT="failure|exited"
+  HERDR_AGENT=""
+  HERDR_PANE=""
+  HERDR_TAB=""
+  HERDR_WS=""
+
+  ensure_herdr_server || return 0
+
+  local label out
+  label=$(basename "$cwd")
+  HERDR_WS=$(hdq workspace list 2>/dev/null | jq -r --arg l "$label" '[.result.workspaces[] | select(.label == $l)][0].workspace_id // empty') || HERDR_WS=""
+  if [[ -z $HERDR_WS ]]; then
+    out=$(hdm workspace create --cwd "$cwd" --label "$label" 2>&1) || {
+      echo "oma-schedule: could not create herdr workspace: $out"
+      return 0
+    }
+    HERDR_WS=$(jq -r '.result.workspace.workspace_id' <<<"$out")
+  fi
+  out=$(hdm tab create --workspace "$HERDR_WS" --cwd "$run_dir" --no-focus 2>&1) || {
+    echo "oma-schedule: could not open a herdr tab: $out"
+    return 0
+  }
+  HERDR_PANE=$(jq -r '.result.root_pane.pane_id' <<<"$out")
+  HERDR_TAB=$(jq -r '.result.tab.tab_id' <<<"$out")
+
+  local agent="${name}-${run_id}" flags state
+  # shellcheck disable=SC2206
+  flags=($(unattended_flags "$kind"))
+  out=$(hdm agent start "$agent" --kind "$kind" --pane "$HERDR_PANE" --timeout "$HERDR_AGENT_START_MS" -- "${flags[@]}" 2>&1) || {
+    if [[ $out == *agent_name_taken* ]]; then
+      agent="${agent}-$RANDOM"
+      out=$(hdm agent start "$agent" --kind "$kind" --pane "$HERDR_PANE" --timeout "$HERDR_AGENT_START_MS" -- "${flags[@]}" 2>&1) || true
+    fi
+  }
+  HERDR_AGENT="$agent"
+  state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
+  if [[ -z $state ]]; then
+    # start failed or timed out; the pane, not the exit code, is the truth
+    echo "oma-schedule: herdr agent start: $out"
+    state=$(herdr_agent_state "$agent") || state=""
+    if [[ $state != idle && $state != done ]]; then
+      HERDR_RESULT=$(map_agent_state "$state")
+      snapshot_transcript "$agent"
+      return 0
+    fi
+  fi
+
+  out=$(timeout "$((timeout_s + 60))" "$HERDR_BIN_WRAP" _herdr agent prompt "$agent" "$prompt" --wait --timeout "$((timeout_s * 1000))" 2>&1) || true
+  state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
+  if [[ -z $state ]]; then
+    echo "oma-schedule: herdr agent prompt: $out"
+    state=$(herdr_agent_state "$agent") || state=""
+  fi
+  HERDR_RESULT=$(map_agent_state "$state")
+  snapshot_transcript "$agent"
+  return 0
+}
+
+# Clean worktree with no commits past the recorded base.
+worktree_unchanged() {
+  local wt="$1" base="$2"
+  [[ -d $wt && -n $base ]] || return 1
+  [[ -z $(git -C "$wt" status --porcelain 2>/dev/null) ]] &&
+    [[ $(git -C "$wt" rev-list --count "$base"..HEAD 2>/dev/null) -eq 0 ]]
+}
+
+# Pane retention for one task, run after a new pane is recorded: panes that
+# vanished are reconciled; beyond `herdr_retain` live panes (newest first)
+# the settled ones are closed (working/blocked never are). A closed pane's
+# unchanged worktree goes with it; the run entry and log stay.
+prune_task_panes() {
+  local task="$1" retain live agents_json kept=0
+  retain=$(setting herdr_retain)
+  live=$(live_panes_json)
+  agents_json=$(hdq agent list 2>/dev/null | jq -c '.result.agents // []' 2>/dev/null) || agents_json='[]'
+  local id pane tab agent wt_path wt_branch base state
+  # \x1f-separated: empty fields (no tab_id on a legacy run) must not collapse
+  while IFS=$'\x1f' read -r id pane tab agent wt_path wt_branch base; do
+    [[ -z $id ]] && continue
+    if jq -e --arg p "$pane" 'index($p) != null' <<<"$live" >/dev/null; then
+      if ((kept < retain)); then
+        kept=$((kept + 1))
+        continue
+      fi
+      state=$(jq -r --arg n "$agent" --arg p "$pane" '[.[] | select(.name == $n or .pane_id == $p)][0].agent_status // empty' <<<"$agents_json")
+      [[ $state == working || $state == blocked || -z $tab ]] && continue
+      hdm tab close "$tab" </dev/null >/dev/null 2>&1 || {
+        echo "oma-schedule: could not close pane $pane (run $id); keeping it"
+        continue
+      }
+      echo "oma-schedule: closed pane $pane (run $id, retain $retain)"
+    fi
+    local drop_wt=false
+    if [[ $wt_path != null ]] && worktree_unchanged "$wt_path" "$base"; then
+      remove_worktree "$(dirname "$(dirname "$wt_path")")" "$wt_path" "$wt_branch"
+      drop_wt=true
+    fi
+    lock
+    apply "$RUNS" --argjson id "$id" --argjson drop_wt "$drop_wt" '
+      .runs |= map(if .id == $id then .pane_id = null | .tab_id = null
+        | (if $drop_wt then .worktree_path = null | .worktree_branch = null else . end) else . end)'
+    unlock
+  done < <(jq -r --arg t "$task" '
+    [.runs[] | select(.task == $t and .pane_id != null)] | sort_by(.id) | reverse | .[]
+    | [.id, .pane_id, (.tab_id // ""), (.agent_name // ""), (.worktree_path // "null"),
+       (.worktree_branch // ""), (.base_commit // "")] | map(tostring) | join("\u001f")' "$RUNS")
+  lock
+  retain_runs "$task"
+  unlock
+}
+
+snapshot_transcript() {
+  echo "--- transcript ($1) ---"
+  hdq agent read "$1" --source recent --format text 2>/dev/null || echo "(agent no longer present)"
+}
+
 # --- commands ------------------------------------------------------------------
+
+# Shared by add/edit: enum/type checks on the new fields, then the combo
+# check against what the task would resolve to right now. Warns when a
+# permission mode is set on a task that resolves to herdr (ignored there).
+validate_agent_fields() {
+  local agent="$1" execution="$2" herdr_timeout="$3" perm_mode="$4"
+  [[ -z $agent ]] || validate_agent "$agent"
+  [[ -z $execution ]] || validate_execution "$execution"
+  [[ -z $herdr_timeout || $herdr_timeout =~ ^[0-9]+$ ]] || {
+    echo "oma-schedule: --herdr-timeout must be a whole number of minutes" >&2
+    return 1
+  }
+  local kind source exec_resolved
+  IFS='|' read -r kind source < <(resolve_agent "$agent")
+  exec_resolved=$(resolve_execution "$execution")
+  check_combo "$kind" "$source" "$exec_resolved"
+  [[ -n $perm_mode && $exec_resolved == herdr ]] &&
+    echo "oma-schedule: warning: permission mode is ignored under herdr" >&2
+  return 0
+}
 
 cmd_add() {
   local name="${1:-}"
@@ -154,7 +494,7 @@ cmd_add() {
   }
   validate_name "$name"
 
-  local prompt="" cwd="" schedule="manual" perm_mode="" worktree="true"
+  local prompt="" cwd="" schedule="manual" perm_mode="" worktree="true" agent="" execution="" herdr_timeout=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --prompt)
@@ -175,6 +515,18 @@ cmd_add() {
       ;;
     --worktree)
       worktree="$2"
+      shift 2
+      ;;
+    --agent)
+      agent="$2"
+      shift 2
+      ;;
+    --execution)
+      execution="$2"
+      shift 2
+      ;;
+    --herdr-timeout)
+      herdr_timeout="$2"
       shift 2
       ;;
     *)
@@ -216,17 +568,22 @@ cmd_add() {
     }
   fi
   [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
+  validate_agent_fields "$agent" "$execution" "$herdr_timeout" "$perm_mode"
 
   lock
   apply "$TASKS" \
     --arg name "$name" --arg prompt "$prompt" --arg cwd "$cwd" \
     --arg schedule "$normalized" --arg perm "$perm_mode" \
     --argjson worktree "$([[ $worktree == true ]] && echo true || echo false)" \
-    --argjson next_due "${next_due:-null}" --argjson now "$(now)" '
+    --argjson next_due "${next_due:-null}" --argjson now "$(now)" \
+    --arg agent "$agent" --arg execution "$execution" --argjson herdr_timeout "${herdr_timeout:-null}" '
     .tasks += [{
       name: $name, prompt: $prompt, cwd: $cwd, schedule: $schedule,
       permission_mode: (if $perm == "" then null else $perm end), worktree: $worktree, enabled: true,
-      next_due: $next_due, backlog_since: null, created: $now
+      next_due: $next_due, backlog_since: null, created: $now,
+      agent: (if $agent == "" then null else $agent end),
+      execution: (if $execution == "" then null else $execution end),
+      herdr_timeout: $herdr_timeout
     }]
   '
   echo "added: $name"
@@ -243,12 +600,28 @@ cmd_edit() {
   require_task "$name"
 
   local set_prompt=0 set_cwd=0 set_schedule=0 set_perm=0 set_worktree=0
-  local prompt="" cwd="" schedule="" perm_mode="" worktree=""
+  local set_agent=0 set_execution=0 set_timeout=0
+  local prompt="" cwd="" schedule="" perm_mode="" worktree="" agent="" execution="" herdr_timeout=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --prompt)
       prompt="$2"
       set_prompt=1
+      shift 2
+      ;;
+    --agent)
+      agent="$2"
+      set_agent=1
+      shift 2
+      ;;
+    --execution)
+      execution="$2"
+      set_execution=1
+      shift 2
+      ;;
+    --herdr-timeout)
+      herdr_timeout="$2"
+      set_timeout=1
       shift 2
       ;;
     --cwd)
@@ -303,10 +676,26 @@ cmd_edit() {
 
   [[ $perm_mode == none ]] && perm_mode=""
   [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
+  [[ $agent == none ]] && agent=""
+  [[ $execution == none ]] && execution=""
+  [[ $herdr_timeout == none ]] && herdr_timeout=""
+  # Combo check on the task as it will be after this edit.
+  local cur eff_agent eff_exec eff_perm
+  cur=$(jq -c --arg n "$name" '.tasks[] | select(.name == $n)' "$TASKS")
+  eff_agent=$(jq -r '.agent // empty' <<<"$cur")
+  eff_exec=$(jq -r '.execution // empty' <<<"$cur")
+  eff_perm=$(jq -r '.permission_mode // empty' <<<"$cur")
+  ((set_agent)) && eff_agent="$agent"
+  ((set_execution)) && eff_exec="$execution"
+  ((set_perm)) && eff_perm="$perm_mode"
+  validate_agent_fields "$eff_agent" "$eff_exec" "$herdr_timeout" "$eff_perm"
 
   lock
   apply "$TASKS" \
     --arg name "$name" \
+    --argjson set_agent "$set_agent" --arg agent "$agent" \
+    --argjson set_execution "$set_execution" --arg execution "$execution" \
+    --argjson set_timeout "$set_timeout" --argjson herdr_timeout "${herdr_timeout:-null}" \
     --argjson set_prompt "$set_prompt" --arg prompt "$prompt" \
     --argjson set_cwd "$set_cwd" --arg cwd "$cwd" \
     --argjson set_schedule "$set_schedule" --arg schedule "$normalized" \
@@ -320,6 +709,9 @@ cmd_edit() {
       | (if $set_schedule == 1 then .schedule = $schedule | .next_due = $next_due | .backlog_since = null else . end)
       | (if $set_perm == 1 then .permission_mode = (if $perm == "" then null else $perm end) else . end)
       | (if $set_worktree == 1 then .worktree = $worktree else . end)
+      | (if $set_agent == 1 then .agent = (if $agent == "" then null else $agent end) else . end)
+      | (if $set_execution == 1 then .execution = (if $execution == "" then null else $execution end) else . end)
+      | (if $set_timeout == 1 then .herdr_timeout = $herdr_timeout else . end)
       else . end)
   '
   echo "edited: $name"
@@ -339,10 +731,21 @@ cmd_list() {
     # Bar-widget summary (spec: .scratch/oma-schedule-bar-widget/spec.md).
     # last_run = newest run per task; disabled tasks still count as
     # failed/running but never as backlog/next.
-    jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" --argjson avail "$(available_sessions_json)" '
-      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, session_available: (.session_id as $s | $avail | index($s) != null)})}) | from_entries) as $last
+    # Agent resolution is done once here (settings + omarchy default) and
+    # applied per task in jq; the omarchy default is a subprocess.
+    local s_agent s_exec o_agent
+    s_agent=$(setting agent)
+    s_exec=$(setting execution)
+    o_agent=$("$DEFAULT_AGENT_BIN" 2>/dev/null) || o_agent=""
+    jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" --argjson avail "$(available_sessions_json)" \
+      --argjson panes "$(live_panes_json)" \
+      --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" '
+      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(. + {
+          agent: (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)),
+          agent_source: (if .agent != null then "task" elif $s_agent != "" then "settings" elif $o_agent != "" then "omarchy" else "none" end),
+          execution: (.execution // $s_exec),
           next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end),
           last_run: ($last[.name] // null),
           worktrees: ($wts[.name] // 0)
@@ -422,32 +825,32 @@ cmd_disable() {
 
 # --- execution (ticket 03) ----------------------------------------------------
 
-# Finalize a run-log entry (under lock) and prune that task's runs to the
-# newest RETAIN_RUNS; runs that still hold a worktree are exempt so `prune`
-# can find them later. wt_path/wt_branch "" mean "no worktree kept" -> null.
-# Log files follow runs.json: any logs/<id>.out with no matching run is removed.
+# Finalize a run-log entry (under lock) by merging a JSON patch of fields and
+# setting `end`, then prune that task's runs to the newest RETAIN_RUNS; runs
+# that still hold a worktree or a live herdr pane are exempt so `prune` /
+# `attach` can find them later. Log files follow runs.json: any logs/<id>.out
+# with no matching run is removed.
 finalize_run() {
-  local run_id="$1" task="$2" exit_code="$3" status="$4" sid="$5" mode="$6" \
-    wt_path="$7" wt_branch="$8" run_dir="$9"
+  local run_id="$1" task="$2" patch="$3"
   local end
   end=$(now)
   lock
-  apply "$RUNS" \
-    --argjson id "$run_id" --arg task "$task" --argjson end "$end" --arg status "$status" \
-    --argjson exit_code "$exit_code" --arg sid "$sid" --arg mode "$mode" \
-    --arg wt_path "$wt_path" --arg wt_branch "$wt_branch" --arg run_dir "$run_dir" \
-    --argjson retain "$RETAIN_RUNS" '
+  apply "$RUNS" --argjson id "$run_id" --argjson end "$end" --argjson patch "$patch" '
+    .runs |= map(if .id == $id then . + $patch + {end: $end} else . end)'
+  retain_runs "$task"
+  unlock
+}
+
+# Trim a task's runs to the newest RETAIN_RUNS (kept-worktree / live-pane
+# runs are extra) and drop log files of runs no longer listed. Caller holds
+# the lock.
+retain_runs() {
+  local task="$1"
+  apply "$RUNS" --arg task "$task" --argjson retain "$RETAIN_RUNS" '
     .runs |= (
-      map(if .id == $id then
-          .end = $end | .status = $status | .exit_code = $exit_code |
-          .session_id = $sid | .permission_mode = $mode |
-          .worktree_path = ($wt_path | if . == "" then null else . end) |
-          .worktree_branch = ($wt_branch | if . == "" then null else . end) |
-          .cwd = $run_dir
-        else . end)
-      | (map(select(.task != $task))) as $others
-      | (map(select(.task == $task and .worktree_path != null))) as $kept
-      | (map(select(.task == $task and .worktree_path == null)) | sort_by(.id) | .[-$retain:]) as $mine
+        (map(select(.task != $task))) as $others
+      | (map(select(.task == $task and (.worktree_path != null or .pane_id != null)))) as $kept
+      | (map(select(.task == $task and .worktree_path == null and .pane_id == null)) | sort_by(.id) | .[-$retain:]) as $mine
       | ($others + $kept + $mine) | sort_by(.id)
     )
   '
@@ -457,7 +860,6 @@ finalize_run() {
     [[ -f $f ]] || continue
     grep -qx "$(basename "$f" .out)" <<<"$live" || rm -f "$f"
   done
-  unlock
 }
 
 # Run a task end to end: worktree, claude -p invocation, worktree cleanup,
@@ -474,21 +876,30 @@ run_task() {
   perm_override=$(jq -r '.permission_mode // empty' <<<"$task_json")
   worktree_enabled=$(jq -r '.worktree' <<<"$task_json")
 
+  # Resolve backend + agent kind now: the omarchy default may have changed
+  # since the task was added. Done before the run entry exists so a bad
+  # config still gets a logged, failed run below.
+  local kind source execution
+  IFS='|' read -r kind source < <(resolve_agent "$(jq -r '.agent // empty' <<<"$task_json")")
+  execution=$(resolve_execution "$(jq -r '.execution // empty' <<<"$task_json")")
+
   mkdir -p -m 700 "$STATE_DIR/logs"
 
   local sid start run_id
   sid=$(uuidgen)
+  [[ $execution == herdr ]] && sid=""
   start=$(now)
   lock
   run_id=$(jq -r '.nextRunId' "$RUNS")
   apply "$RUNS" \
     --argjson id "$run_id" --arg task "$name" --arg trig "$trigger" \
-    --argjson start "$start" --arg sid "$sid" '
+    --argjson start "$start" --arg sid "$sid" --arg backend "$execution" '
     .nextRunId = ($id + 1)
     | .runs += [{
         id: $id, task: $task, trigger: $trig, start: $start, end: null,
-        status: "running", exit_code: null, session_id: $sid,
-        permission_mode: null, worktree_path: null, worktree_branch: null, cwd: null
+        status: "running", exit_code: null, session_id: (if $sid == "" then null else $sid end),
+        permission_mode: null, worktree_path: null, worktree_branch: null, cwd: null,
+        backend: $backend, reason: null, pane_id: null, tab_id: null, workspace_id: null, agent_name: null
       }]
   '
   unlock
@@ -496,15 +907,30 @@ run_task() {
   local log_file="$STATE_DIR/logs/${run_id}.out"
   (umask 077 && : >"$log_file")
 
+  # A run that never launches an agent: log the message, record the reason.
+  fail_config() {
+    echo "oma-schedule: $1" | tee -a "$log_file" >&2
+    finalize_run "$run_id" "$name" "$(jq -nc --arg c "$cwd" '{exit_code: 1, status: "failure", reason: "invalid_config", cwd: $c}')"
+    echo "$run_id failure"
+    return 1
+  }
+
+  if [[ -z $kind ]]; then
+    fail_config "no default agent set for \"$name\" (run: omarchy default agent <name>)"
+    return 1
+  fi
+  if ! validate_agent "$kind" 2>>"$log_file" || ! check_combo "$kind" "$source" "$execution" 2>>"$log_file"; then
+    fail_config "task \"$name\" has no valid backend for agent \"$kind\" under $execution (see run $run_id log)"
+    return 1
+  fi
+
   local mode="$perm_override"
   if [[ -z $mode ]]; then
     mode=$(jq -r '.permissions.defaultMode // empty' "$CLAUDE_HOME/settings.json" 2>/dev/null) || true
   fi
   [[ -z $mode ]] && mode="default"
-  if ! validate_perm_mode "$mode" 2>>"$log_file"; then
-    finalize_run "$run_id" "$name" 1 failure "$sid" "$mode" "" "" "$cwd"
-    echo "oma-schedule: invalid permission mode \"$mode\" for \"$name\"" >&2
-    echo "$run_id failure"
+  if [[ $execution == headless ]] && ! validate_perm_mode "$mode" 2>>"$log_file"; then
+    fail_config "invalid permission mode \"$mode\" for \"$name\""
     return 1
   fi
 
@@ -519,7 +945,7 @@ run_task() {
     if ! base_commit=$(git -C "$cwd" rev-parse HEAD 2>>"$log_file") ||
       ! git -C "$cwd" worktree add -b "$wt_branch" "$wt_path" >>"$log_file" 2>&1; then
       echo "oma-schedule: failed to create worktree for \"$name\"" >>"$log_file"
-      finalize_run "$run_id" "$name" 1 failure "$sid" "$mode" "" "" "$cwd"
+      finalize_run "$run_id" "$name" "$(jq -nc --arg c "$cwd" '{exit_code: 1, status: "failure", cwd: $c}')"
       echo "oma-schedule: failed to create worktree for \"$name\"" >&2
       echo "$run_id failure"
       return 1
@@ -527,31 +953,76 @@ run_task() {
     run_dir="$wt_path"
   fi
 
-  local exit_code
-  set +e
-  (cd "$run_dir" && "$CLAUDE_BIN" -p "$prompt" --session-id "$sid" --permission-mode "$mode" --output-format json) >"$log_file" 2>&1
-  exit_code=$?
-  set -e
+  local exit_code status reason="" pane="" tab="" ws="" agent_name=""
+  if [[ $execution == herdr ]]; then
+    local timeout_s
+    timeout_s=$(jq -r '.herdr_timeout // empty' <<<"$task_json")
+    [[ -n $timeout_s ]] || timeout_s=$(setting herdr_timeout_minutes)
+    timeout_s=$((timeout_s * 60))
+    [[ -n ${OMA_SCHEDULE_HERDR_TIMEOUT:-} ]] && timeout_s="$OMA_SCHEDULE_HERDR_TIMEOUT"
+    cache_herdr_session
+    # errexit off: a failed herdr query must end in finalize_run, never in a
+    # run stranded as "running" (the sweep's `run` path has no `||` guard).
+    set +e
+    herdr_run "$name" "$run_id" "$kind" "$prompt" "$cwd" "$run_dir" "$timeout_s" >>"$log_file" 2>&1
+    set -e
+    status=${HERDR_RESULT%%|*}
+    reason=${HERDR_RESULT#*|}
+    pane="$HERDR_PANE"
+    tab="$HERDR_TAB"
+    ws="$HERDR_WS"
+    agent_name="$HERDR_AGENT"
+    exit_code=0
+    [[ $status == success ]] || exit_code=1
+    mode=""
+    [[ -n $pane ]] || grep -h '^oma-schedule:' "$log_file" >&2 || true
+  else
+    set +e
+    (cd "$run_dir" && "$CLAUDE_BIN" -p "$prompt" --session-id "$sid" --permission-mode "$mode" --output-format json) >"$log_file" 2>&1
+    exit_code=$?
+    set -e
+    status="success"
+    ((exit_code == 0)) || status="failure"
+  fi
 
+  # Unchanged worktrees are removed now, except while a herdr pane still
+  # lives in them (attach must find the files); pane pruning removes those.
   if [[ $worktree_enabled == true ]]; then
     local unchanged=0
     if [[ -z $(git -C "$wt_path" status --porcelain) ]] &&
       [[ $(git -C "$wt_path" rev-list --count "$base_commit"..HEAD) -eq 0 ]]; then
       unchanged=1
     fi
-    if ((unchanged)); then
-      git -C "$cwd" worktree remove --force "$wt_path" >/dev/null 2>&1 || true
-      git -C "$cwd" branch -D "$wt_branch" >/dev/null 2>&1 || true
+    if ((unchanged)) && [[ -z $pane ]]; then
+      remove_worktree "$cwd" "$wt_path" "$wt_branch"
       wt_path=""
       wt_branch=""
     fi
   fi
 
-  local status="success"
-  ((exit_code == 0)) || status="failure"
-  finalize_run "$run_id" "$name" "$exit_code" "$status" "$sid" "$mode" "$wt_path" "$wt_branch" "$run_dir"
+  finalize_run "$run_id" "$name" "$(jq -nc --argjson ec "$exit_code" --arg st "$status" --arg sid "$sid" \
+    --arg mode "$mode" --arg wp "$wt_path" --arg wb "$wt_branch" --arg rd "$run_dir" \
+    --arg reason "$reason" --arg pane "$pane" --arg tab "$tab" --arg ws "$ws" --arg agent "$agent_name" \
+    --arg base "$base_commit" '
+    def nn: if . == "" then null else . end;
+    {exit_code: $ec, status: $st, session_id: ($sid | nn), permission_mode: ($mode | nn),
+     worktree_path: ($wp | nn), worktree_branch: ($wb | nn), cwd: $rd,
+     reason: ($reason | nn), pane_id: ($pane | nn), tab_id: ($tab | nn), workspace_id: ($ws | nn),
+     agent_name: ($agent | nn), base_commit: (if $wp == "" then null else $base end)}')"
+  # Pane retention runs once this run's pane is on record, so exactly
+  # herdr_retain panes (newest first) survive per task.
+  if [[ -n $pane ]]; then
+    set +e
+    prune_task_panes "$name" >>"$log_file" 2>&1
+    set -e
+  fi
   echo "$run_id $status"
   [[ $status == success ]]
+}
+
+remove_worktree() {
+  git -C "$1" worktree remove --force "$2" >/dev/null 2>&1 || true
+  git -C "$1" branch -D "$3" >/dev/null 2>&1 || true
 }
 
 cmd_trigger() {
@@ -567,10 +1038,14 @@ cmd_trigger() {
   out=$(run_task "$name" manual) || rc=$?
   local run_id status
   read -r run_id status <<<"$out"
-  local sid
-  sid=$(jq -r --argjson id "$run_id" '.runs[] | select(.id == $id) | .session_id' "$RUNS")
-  echo "run $run_id: $status (session $sid)"
+  echo "run $run_id: $status ($(run_handle "$run_id"))"
   return "$rc"
+}
+
+# "session <id>" for headless runs, "pane <id>" for herdr runs.
+run_handle() {
+  jq -r --argjson id "$1" '.runs[] | select(.id == $id)
+    | if .backend == "herdr" then "pane \(.pane_id // "none")" else "session \(.session_id)" end' "$RUNS"
 }
 
 # Recompute + persist next_due for a task "from now" (under lock). Used after
@@ -682,9 +1157,7 @@ cmd_backlog() {
   out=$(run_task "$name" backlog-catchup) || rc=$?
   local run_id status
   read -r run_id status <<<"$out"
-  local sid
-  sid=$(jq -r --argjson id "$run_id" '.runs[] | select(.id == $id) | .session_id' "$RUNS")
-  echo "run $run_id: $status (session $sid)"
+  echo "run $run_id: $status ($(run_handle "$run_id"))"
   return "$rc"
 }
 
@@ -703,9 +1176,12 @@ cmd_log() {
     local logs_json
     logs_json=$(find "$STATE_DIR/logs" -name '*.out' -printf '%f\n' 2>/dev/null | sed 's/\.out$//' | jq -R . | jq -sc .)
     jq -c --arg n "$name" --arg logs "$STATE_DIR/logs" \
-      --argjson avail "$(available_sessions_json)" --argjson logs_present "$logs_json" '
+      --argjson avail "$(available_sessions_json)" --argjson logs_present "$logs_json" \
+      --argjson panes "$(live_panes_json)" '
       [.runs[] | select(.task == $n)
+        | .backend = (.backend // "headless") | .reason = (.reason // null) | .pane_id = (.pane_id // null)
         | .session_available = (.session_id as $s | $avail | index($s) != null)
+        | .pane_available = (.pane_id as $p | $p != null and ($panes | index($p)) != null)
         | .log_path = ((.id | tostring) as $i | if ($logs_present | index($i)) != null then "\($logs)/\($i).out" else null end)]
       | sort_by(.id) | reverse' "$RUNS"
     return
@@ -748,6 +1224,10 @@ cmd_resume() {
   task_name=$(jq -r '.task' <<<"$run")
   rcwd=$(jq -r '.cwd' <<<"$run")
 
+  [[ $(jq -r '.backend // "headless"' <<<"$run") == herdr ]] && {
+    echo "oma-schedule: run $run_id is a herdr run; use: oma-schedule attach $run_id" >&2
+    return 1
+  }
   if ! compgen -G "$CLAUDE_HOME/projects/*/${sid}.jsonl" >/dev/null; then
     echo "oma-schedule: session no longer available (run $run_id)" >&2
     return 1
@@ -762,6 +1242,48 @@ cmd_resume() {
   fi
   cd "$rcwd"
   exec "$CLAUDE_BIN" --resume "$sid"
+}
+
+# attach <run-id> [--terminal]: focus the run's agent in the background
+# session, then attach a terminal to that session (the herdr counterpart of
+# resume). --terminal hands the attach to a detached terminal like resume.
+cmd_attach() {
+  local run_id="${1:-}" terminal=0
+  [[ ${2:-} == --terminal ]] && terminal=1
+  [[ -z $run_id ]] && {
+    echo "oma-schedule: attach requires a run id" >&2
+    return 1
+  }
+  ensure_store
+  cache_herdr_session
+  local run
+  run=$(jq -c --argjson id "$run_id" '.runs[] | select(.id == $id)' "$RUNS" 2>/dev/null) || run=""
+  [[ -z $run ]] && {
+    echo "oma-schedule: no such run \"$run_id\"" >&2
+    return 1
+  }
+  [[ $(jq -r '.backend // "headless"' <<<"$run") == herdr ]] || {
+    echo "oma-schedule: run $run_id is a headless run; use: oma-schedule resume $run_id" >&2
+    return 1
+  }
+  local pane agent
+  pane=$(jq -r '.pane_id // empty' <<<"$run")
+  agent=$(jq -r '.agent_name // empty' <<<"$run")
+  if [[ -z $pane ]] || ! live_panes_json | jq -e --arg p "$pane" 'index($p) != null' >/dev/null; then
+    echo "oma-schedule: pane not available for run $run_id (pruned, closed, or herdr server down)" >&2
+    return 1
+  fi
+  if ((terminal)); then
+    setsid -f "$TERMINAL_BIN" "$(realpath "$0")" attach "$run_id" >/dev/null 2>&1
+    return 0
+  fi
+  [[ -z $agent ]] || hdq agent focus "$agent" >/dev/null 2>&1 || true
+  local session
+  session=$(herdr_session)
+  if [[ $session == default ]]; then
+    hd_exec
+  fi
+  hd_exec session attach "$session"
 }
 
 # --- worktree pruning ----------------------------------------------------------
@@ -822,7 +1344,69 @@ cmd_prune() {
     git -C "$repo" branch -D "$wt_branch" >/dev/null 2>&1 || true
     clear_worktree_record "$id"
     echo "pruned: $wt_path"
-  done < <(jq -r '.runs[] | select(.worktree_path != null) | [.id, .worktree_path, (.worktree_branch // "null")] | @tsv' "$RUNS")
+  done < <(jq -r '.runs[] | select(.worktree_path != null and .pane_id == null) | [.id, .worktree_path, (.worktree_branch // "null")] | @tsv' "$RUNS")
+}
+
+# settings | settings get <key> | settings set <key> <value>
+cmd_settings() {
+  local verb="${1:-}" key="${2:-}" value="${3:-}"
+  case "$verb" in
+  "")
+    settings_json | jq .
+    ;;
+  get)
+    [[ -n $key ]] || { echo "oma-schedule: settings get requires a key" >&2; return 1; }
+    settings_json | jq -e --arg k "$key" 'has($k)' >/dev/null || {
+      echo "oma-schedule: unknown setting \"$key\"" >&2
+      return 1
+    }
+    settings_json | jq -r --arg k "$key" '.[$k]'
+    ;;
+  set)
+    [[ -n $key && $# -ge 3 ]] || { echo "oma-schedule: settings set requires <key> <value>" >&2; return 1; }
+    local json
+    case "$key" in
+    execution)
+      validate_execution "$value"
+      json=$(jq -n --arg v "$value" '$v')
+      ;;
+    agent)
+      if [[ $value == null || $value == none ]]; then
+        json=null
+      else
+        validate_agent "$value"
+        json=$(jq -n --arg v "$value" '$v')
+      fi
+      ;;
+    herdr_session)
+      [[ $value =~ ^[A-Za-z0-9._-]+$ ]] || { echo "oma-schedule: invalid session name \"$value\"" >&2; return 1; }
+      json=$(jq -n --arg v "$value" '$v')
+      ;;
+    herdr_retain | herdr_timeout_minutes)
+      [[ $value =~ ^[1-9][0-9]*$ ]] || { echo "oma-schedule: $key must be a whole number >= 1" >&2; return 1; }
+      json=$value
+      ;;
+    *)
+      echo "oma-schedule: unknown or read-only setting \"$key\"" >&2
+      return 1
+      ;;
+    esac
+    # Combo check at the settings layer: what would a task with no overrides get?
+    local merged kind exec_resolved
+    merged=$(settings_json | jq -c --arg k "$key" --argjson v "$json" '.[$k] = $v')
+    kind=$(jq -r '.agent // empty' <<<"$merged")
+    exec_resolved=$(jq -r '.execution' <<<"$merged")
+    check_combo "$kind" settings "$exec_resolved"
+    lock
+    write_settings "$merged"
+    unlock
+    echo "set: $key"
+    ;;
+  *)
+    echo "oma-schedule: settings takes no verb, \"get <key>\" or \"set <key> <value>\"" >&2
+    return 1
+    ;;
+  esac
 }
 
 cmd_show_overlay() { omarchy-shell shell summon kmg.oma-claude-schedule "{}" >/dev/null 2>&1 || true; }
@@ -832,8 +1416,12 @@ usage() {
 Usage:
   oma-schedule add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                           [--permission-mode <mode>] [--worktree true|false]
+                          [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
   oma-schedule edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                           [--permission-mode <mode>|none] [--worktree true|false]
+                          [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
+  oma-schedule settings [get <key> | set <key> <value>]
+                                       show / read / write settings.json
   oma-schedule list [--json]           list tasks
   oma-schedule rm <name>               remove a task
   oma-schedule enable <name>           re-enable a disabled task
@@ -843,13 +1431,18 @@ Usage:
   oma-schedule backlog run|skip <name> resolve a pending backlog notification
   oma-schedule log <name> [--json]     show a task's run history
   oma-schedule resume <run-id> [--terminal]
-                                       resume a past run's Claude session
+                                       resume a past headless run's Claude session
                                        (--terminal: in a new terminal window)
+  oma-schedule attach <run-id> [--terminal]
+                                       attach to a herdr run's pane
   oma-schedule prune                   remove kept worktrees whose branch is merged
   oma-schedule show-overlay            open the task panel
 
 Default --schedule is "manual" (never fires on its own). Schedule expressions
 are systemd calendar specs, validated via `systemd-analyze calendar`.
+Agent kind resolves task --agent -> settings agent -> `omarchy default agent`;
+execution resolves task --execution -> settings execution (default headless,
+claude only).
 EOF
 }
 
@@ -887,6 +1480,11 @@ run)
   shift
   run_task "$1" "$2" >/dev/null
   ;;
+_herdr)
+  # internal: herdr re-entered through `timeout` (see hdq/hdm)
+  shift
+  hd_exec "$@"
+  ;;
 sweep)
   cmd_sweep
   ;;
@@ -902,8 +1500,16 @@ resume)
   shift
   cmd_resume "$@"
   ;;
+attach)
+  shift
+  cmd_attach "$@"
+  ;;
 prune)
   cmd_prune
+  ;;
+settings)
+  shift
+  cmd_settings "$@"
   ;;
 show-overlay)
   cmd_show_overlay

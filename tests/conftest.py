@@ -126,10 +126,43 @@ def fake_notify_bin(tmp_path):
 
 
 @pytest.fixture
-def cli(state_home, calls_dir, fake_claude_bin, claude_home, notify_log, fake_notify_bin):
+def config_home(tmp_path):
+    return tmp_path / "config"
+
+
+@pytest.fixture
+def default_agent_bin(tmp_path):
+    """Fake `omarchy-default-agent`; prints `claude` unless a test rewrites it."""
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    script = bin_dir / "omarchy-default-agent"
+    script.write_text("#!/bin/bash\necho claude\n")
+    script.chmod(0o755)
+    return script
+
+
+@pytest.fixture
+def stub_dir(tmp_path):
+    """State + control files for tests/stubs/herdr and tests/stubs/systemctl;
+    `log` is the invocation log both stubs append to."""
+    d = tmp_path / "herdr-stub"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def cli(state_home, config_home, calls_dir, fake_claude_bin, claude_home, notify_log, fake_notify_bin, default_agent_bin, stub_dir):
     def run(*args, env_overrides=None):
         env = dict(os.environ)
         env["XDG_STATE_HOME"] = str(state_home)
+        env["XDG_CONFIG_HOME"] = str(config_home)
+        env["OMA_SCHEDULE_DEFAULT_AGENT_BIN"] = str(default_agent_bin)
+        env["OMA_SCHEDULE_HERDR_BIN"] = str(REPO_ROOT / "tests" / "stubs" / "herdr")
+        env["OMA_SCHEDULE_SYSTEMCTL_BIN"] = str(REPO_ROOT / "tests" / "stubs" / "systemctl")
+        env["STUB_DIR"] = str(stub_dir)
+        env["STUB_LOG"] = str(stub_dir / "log")
+        for k in ("HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_ENV"):
+            env.pop(k, None)
         env["TZ"] = "UTC"
         env["OMA_SCHEDULE_CLAUDE_BIN"] = str(fake_claude_bin)
         env["OMA_SCHEDULE_CLAUDE_HOME"] = str(claude_home)
