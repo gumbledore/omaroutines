@@ -16,7 +16,8 @@ CLI = REPO_ROOT / "bin" / "oma-schedule"
 
 # Records argv/pwd per --session-id (avoids collisions between concurrent
 # runs of the same task) and echoes a fake `claude -p ... --output-format
-# json` result. Honors --resume, FAKE_CLAUDE_TOUCH, FAKE_CLAUDE_EXIT.
+# json` result. Honors --resume, FAKE_CLAUDE_TOUCH, FAKE_CLAUDE_EXIT, and
+# FAKE_CLAUDE_PROJECTS_DIR (writes the session .jsonl the way claude does).
 FAKE_CLAUDE_SCRIPT = """#!/bin/bash
 set -euo pipefail
 
@@ -39,6 +40,10 @@ pwd >"$calls_dir/$sid.pwd"
 
 [[ -n "${FAKE_CLAUDE_SLEEP:-}" ]] && sleep "$FAKE_CLAUDE_SLEEP"
 [[ "${FAKE_CLAUDE_TOUCH:-}" == "1" ]] && touch touched.txt
+if [[ -n "${FAKE_CLAUDE_PROJECTS_DIR:-}" ]]; then
+  mkdir -p "$FAKE_CLAUDE_PROJECTS_DIR/proj"
+  echo '{}' >"$FAKE_CLAUDE_PROJECTS_DIR/proj/$sid.jsonl"
+fi
 
 printf '{"type":"result","session_id":"%s","result":"ok"}\\n' "$sid"
 exit "${FAKE_CLAUDE_EXIT:-0}"

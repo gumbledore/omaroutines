@@ -20,8 +20,8 @@ native trigger, run log, and UI, built on the same primitives as this machine's
 - `docs/design.md` — source of truth for scope and architecture
 - `bin/oma-schedule` — the CLI, sole writer of `~/.local/state/oma-schedule/{tasks,runs}.json`
 - `systemd/` — `oma-schedule-sweep.{timer,service}` (every-minute sweep)
-- `manifest.json`, `BarWidget.qml`, `install.sh` — Omarchy plugin packaging + bar widget (overlay not yet built)
-- `tests/` — pytest suite driving the CLI as a subprocess
+- `manifest.json`, `BarWidget.qml`, `Panel.qml`, `panel/`, `install.sh` — Omarchy plugin packaging, bar widget, and its popup task panel
+- `tests/` — pytest suite driving the CLI as a subprocess, plus a headless QML smoke test (`tests/qml/`)
 
 ## How to run
 
@@ -36,5 +36,5 @@ native trigger, run log, and UI, built on the same primitives as this machine's
   `OnCalendar` sweep timer with `Persistent=true`).
 - Schedule math uses `systemd-analyze calendar` (no Python at runtime; `uv` is
   only for the test suite).
-- QML overlay + bar widget via `omarchy-shell shell summon`, same pattern as
-  `gumbledore.reminders`.
+- Bar widget + bar-anchored panel (omagit/omaplug pattern); `oma-schedule
+  show-overlay` summons it via `omarchy-shell shell summon`.

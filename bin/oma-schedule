@@ -18,6 +18,7 @@ CLAUDE_BIN="${OMA_SCHEDULE_CLAUDE_BIN:-claude}"
 NOTIFY_BIN="${OMA_SCHEDULE_NOTIFY_BIN:-omarchy-notification-send}"
 BACKLOG_TIMEOUT="${OMA_SCHEDULE_BACKLOG_TIMEOUT:-900}"
 CLAUDE_HOME="${OMA_SCHEDULE_CLAUDE_HOME:-$HOME/.claude}"
+TERMINAL_BIN="${OMA_SCHEDULE_TERMINAL_BIN:-xdg-terminal-exec}"
 RETAIN_RUNS=20
 GLYPH="󰃰"
 
@@ -120,6 +121,13 @@ require_task() {
     echo "oma-schedule: no such task \"$1\"" >&2
     return 1
   }
+}
+
+# JSON array of session ids that still have a transcript under
+# $CLAUDE_HOME/projects — the panel dims Resume from this without a round trip.
+available_sessions_json() {
+  find "$CLAUDE_HOME/projects" -name '*.jsonl' -printf '%f\n' 2>/dev/null |
+    sed 's/\.jsonl$//' | jq -R . | jq -sc .
 }
 
 # --- commands ------------------------------------------------------------------
@@ -307,19 +315,23 @@ cmd_list() {
   ensure_store
   if [[ ${1:-} == --json ]]; then
     # jq's strftime is UTC-only; build a local-time text map in bash so
-    # --json and the human table agree.
-    local text_map="{}" d
-    for d in $(jq -r '[.tasks[].next_due // empty] | unique | .[]' "$TASKS"); do
+    # --json and the human table agree. tasks.json is read once: the widget
+    # polls on file change, i.e. while the CLI may be rewriting next_due.
+    local tasks_json text_map="{}" d
+    tasks_json=$(cat "$TASKS")
+    for d in $(jq -r '[.tasks[].next_due // empty] | unique | .[]' <<<"$tasks_json"); do
       text_map=$(jq -c --argjson d "$d" --arg t "$(when_text "$d")" '. + {($d|tostring): $t}' <<<"$text_map")
     done
     # Bar-widget summary (spec: .scratch/oma-schedule-bar-widget/spec.md).
     # last_run = newest run per task; disabled tasks still count as
     # failed/running but never as backlog/next.
-    jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" '
-      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end})}) | from_entries) as $last
+    jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" --argjson avail "$(available_sessions_json)" '
+      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, session_available: (.session_id as $s | $avail | index($s) != null)})}) | from_entries) as $last
+      | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(. + {
           next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end),
-          last_run: ($last[.name] // null)
+          last_run: ($last[.name] // null),
+          worktrees: ($wts[.name] // 0)
         })) as $tasks
       | ($tasks | map(select(.enabled and .next_due != null)) | min_by(.next_due)) as $n
       | {
@@ -340,7 +352,7 @@ cmd_list() {
             + (if .running > 0 then " · \(.running) running" else "" end)
             + (if .backlog > 0 then " · \(.backlog) backlog" else "" end)
           end)
-    ' "$TASKS"
+    ' <<<"$tasks_json"
     return
   fi
 
@@ -397,7 +409,8 @@ cmd_disable() {
 # --- execution (ticket 03) ----------------------------------------------------
 
 # Finalize a run-log entry (under lock) and prune that task's runs to the
-# newest RETAIN_RUNS. wt_path/wt_branch "" mean "no worktree kept" -> null.
+# newest RETAIN_RUNS; runs that still hold a worktree are exempt so `prune`
+# can find them later. wt_path/wt_branch "" mean "no worktree kept" -> null.
 finalize_run() {
   local run_id="$1" task="$2" exit_code="$3" status="$4" sid="$5" mode="$6" \
     wt_path="$7" wt_branch="$8" run_dir="$9"
@@ -418,8 +431,9 @@ finalize_run() {
           .cwd = $run_dir
         else . end)
       | (map(select(.task != $task))) as $others
-      | (map(select(.task == $task)) | sort_by(.id) | .[-$retain:]) as $mine
-      | ($others + $mine) | sort_by(.id)
+      | (map(select(.task == $task and .worktree_path != null))) as $kept
+      | (map(select(.task == $task and .worktree_path == null)) | sort_by(.id) | .[-$retain:]) as $mine
+      | ($others + $kept + $mine) | sort_by(.id)
     )
   '
   unlock
@@ -657,7 +671,15 @@ cmd_log() {
   require_task "$name"
 
   if [[ ${1:-} == --json ]]; then
-    jq -c --arg n "$name" '[.runs[] | select(.task == $n)] | sort_by(.id) | reverse' "$RUNS"
+    # log_path is null once the captured output file is gone.
+    local logs_json
+    logs_json=$(find "$STATE_DIR/logs" -name '*.out' -printf '%f\n' 2>/dev/null | sed 's/\.out$//' | jq -R . | jq -sc .)
+    jq -c --arg n "$name" --arg logs "$STATE_DIR/logs" \
+      --argjson avail "$(available_sessions_json)" --argjson logs_present "$logs_json" '
+      [.runs[] | select(.task == $n)
+        | .session_available = (.session_id as $s | $avail | index($s) != null)
+        | .log_path = ((.id | tostring) as $i | if ($logs_present | index($i)) != null then "\($logs)/\($i).out" else null end)]
+      | sort_by(.id) | reverse' "$RUNS"
     return
   fi
 
@@ -678,7 +700,8 @@ cmd_log() {
 }
 
 cmd_resume() {
-  local run_id="${1:-}"
+  local run_id="${1:-}" terminal=0
+  [[ ${2:-} == --terminal ]] && terminal=1
   [[ -z $run_id ]] && {
     echo "oma-schedule: resume requires a run id" >&2
     return 1
@@ -703,8 +726,75 @@ cmd_resume() {
   fi
 
   [[ -d $rcwd ]] || rcwd=$(jq -r --arg n "$task_name" '.tasks[] | select(.name == $n) | .cwd' "$TASKS")
+  # --terminal (panel): checks done, hand the actual resume to a detached
+  # terminal so the caller returns immediately.
+  if ((terminal)); then
+    setsid -f "$TERMINAL_BIN" "$(realpath "$0")" resume "$run_id" >/dev/null 2>&1
+    return 0
+  fi
   cd "$rcwd"
   exec "$CLAUDE_BIN" --resume "$sid"
+}
+
+# --- worktree pruning ----------------------------------------------------------
+
+# The repo's default branch: origin/HEAD if known, else main, else master.
+default_branch() {
+  local repo="$1" b
+  b=$(git -C "$repo" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) && {
+    echo "$b"
+    return 0
+  }
+  for b in main master; do
+    git -C "$repo" rev-parse --verify -q "$b" >/dev/null 2>&1 && {
+      echo "$b"
+      return 0
+    }
+  done
+  return 1
+}
+
+# Merged = ancestor of the default branch, or every commit has a
+# patch-equivalent there (squash/rebase merges). Local only; never fetches.
+is_merged() {
+  local repo="$1" branch="$2" def
+  def=$(default_branch "$repo") || return 1
+  git -C "$repo" rev-parse --verify -q "$branch" >/dev/null 2>&1 || return 1
+  git -C "$repo" merge-base --is-ancestor "$branch" "$def" 2>/dev/null && return 0
+  ! git -C "$repo" cherry "$def" "$branch" 2>/dev/null | grep -q '^+'
+}
+
+clear_worktree_record() {
+  lock
+  apply "$RUNS" --argjson id "$1" '
+    .runs |= map(if .id == $id then .worktree_path = null | .worktree_branch = null else . end)
+  '
+  unlock
+}
+
+# Remove every kept worktree whose branch is merged (see is_merged); clear the
+# record of any worktree already deleted by hand. Unmerged or dirty worktrees
+# are left alone. The panel calls this on open. Prints "pruned: <path>" per removal.
+cmd_prune() {
+  ensure_store
+  local id wt_path wt_branch repo
+  while IFS=$'\t' read -r id wt_path wt_branch; do
+    [[ -z $id ]] && continue
+    repo=$(dirname "$(dirname "$wt_path")")
+    if [[ ! -d $wt_path ]]; then
+      git -C "$repo" worktree prune >/dev/null 2>&1 || true
+      [[ $wt_branch != null ]] && git -C "$repo" branch -D "$wt_branch" >/dev/null 2>&1 || true
+      clear_worktree_record "$id"
+      continue
+    fi
+    [[ $wt_branch == null ]] && continue
+    is_merged "$repo" "$wt_branch" || continue
+    # no --force: a worktree with uncommitted changes is refused and kept
+    git -C "$repo" worktree remove "$wt_path" >/dev/null 2>&1 || continue
+    git -C "$repo" branch -D "$wt_branch" >/dev/null 2>&1 || true
+    clear_worktree_record "$id"
+    echo "pruned: $wt_path"
+  done < <(jq -r '.runs[] | select(.worktree_path != null) | [.id, .worktree_path, (.worktree_branch // "null")] | @tsv' "$RUNS")
 }
 
 cmd_show_overlay() { omarchy-shell shell summon kmg.oma-claude-schedule "{}" >/dev/null 2>&1 || true; }
@@ -724,8 +814,11 @@ Usage:
   oma-schedule sweep                   fire due tasks (called by the timer)
   oma-schedule backlog run|skip <name> resolve a pending backlog notification
   oma-schedule log <name> [--json]     show a task's run history
-  oma-schedule resume <run-id>         resume a past run's Claude session
-  oma-schedule show-overlay            summon the overlay
+  oma-schedule resume <run-id> [--terminal]
+                                       resume a past run's Claude session
+                                       (--terminal: in a new terminal window)
+  oma-schedule prune                   remove kept worktrees whose branch is merged
+  oma-schedule show-overlay            open the task panel
 
 Default --schedule is "manual" (never fires on its own). Schedule expressions
 are systemd calendar specs, validated via `systemd-analyze calendar`.
@@ -780,6 +873,9 @@ log)
 resume)
   shift
   cmd_resume "$@"
+  ;;
+prune)
+  cmd_prune
   ;;
 show-overlay)
   cmd_show_overlay

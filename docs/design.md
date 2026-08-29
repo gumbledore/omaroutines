@@ -15,10 +15,30 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
   `OnCalendar=*:*:00`, `Persistent=true`, `AccuracySec=1s`. Runs
   `oma-schedule sweep` every minute; `Persistent=true` replays a missed sweep
   after sleep/boot.
-- `manifest.json` — Omarchy plugin manifest (`overlay` + `bar-widget` kinds).
-- `BarWidget.qml` — bar widget; renders only `badge`/`enabled`/`tooltip` from
-  `list --json`, re-polls on `tasks.json`/`runs.json` changes and every 60 s.
-  The overlay (`ScheduleFlow.qml`) is not built yet.
+- `manifest.json` — Omarchy plugin manifest (`bar-widget` kind only; the panel
+  is private to the widget, as in omagit/omaplug).
+- `BarWidget.qml` — bar icon + owner of the `list --json` poll (re-run on
+  `tasks.json`/`runs.json` changes, every 60 s, on right-click, and after every
+  panel action). Exposes `open()/close()/toggle()/opened` so the shell's
+  `summon` (→ `oma-schedule show-overlay`) opens the panel. Left-click toggles.
+- `Panel.qml` + `panel/{TaskRow,RunRow}.qml` — bar-anchored popup
+  (`KeyboardPanel`; Escape / outside click / Tab cycling like other panels).
+  One row per task: enable toggle, name (click = expand run history), schedule
+  + next due, last-run chip, backlog pill with Run/Skip, Trigger / Resume /
+  Remove (two-click armed, 6 s disarm). Expanded rows fetch `log <task> --json`
+  while the panel is open. Every action is one CLI call through a shared
+  one-at-a-time `Process`; non-zero exit shows stderr inline on that row.
+  Trigger is the exception: launched detached, because a `Process` dies with
+  the shell and would strand a run as `running`. Header buttons: refresh, an
+  inline add-task form (name, cwd, prompt, schedule, permission mode,
+  worktree → one `add` call, errors inline), and "open tasks.json" in the
+  config editor (hand edits bypass validation and `next_due` recomputation).
+  Edit stays CLI-only. Expanded rows show cwd/worktree/mode, the prompt in a
+  wrapped box capped at ~10 lines, and the run history.
+- `tests/qml/Harness.qml` — headless smoke harness (`quickshell -p`,
+  offscreen) driven by `tests/test_qml_smoke.py`: loads `BarWidget.qml` against
+  a fake CLI and compile-checks the panel files. No window backend exists
+  offscreen, so the panel is loaded only once the widget has a `bar`.
 - `install.sh` — symlinks CLI into `~/.local/bin`, symlinks units, `daemon-reload`,
   `enable --now` the timer, symlinks the repo into `~/.config/omarchy/plugins/<id>`
   and rescans plugins.
@@ -63,7 +83,8 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
 ```
 
 Retention: after any run completes, that task's runs are pruned to the newest
-`RETAIN_RUNS=20`.
+`RETAIN_RUNS=20`; runs that still hold a worktree are exempt (see Worktree
+pruning) so they never become orphans on disk.
 
 ## CLI surface
 
@@ -79,8 +100,9 @@ oma-schedule trigger <name>              # run now (trigger=manual)
 oma-schedule sweep                       # called by the timer
 oma-schedule backlog run|skip <name>     # resolve a pending multi-miss backlog
 oma-schedule log <name> [--json]
-oma-schedule resume <run-id>
-oma-schedule show-overlay
+oma-schedule resume <run-id> [--terminal]
+oma-schedule prune                       # remove kept worktrees whose branch is merged
+oma-schedule show-overlay                # summon the panel
 ```
 
 Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
@@ -90,7 +112,11 @@ newest run, or null); top level carries `count`, `enabled`, `failed`,
 `running`, `backlog` (enabled tasks with a pending backlog), `badge`
 (= failed + backlog), `next` (earliest-due enabled non-manual task, or null),
 `active` (= badge > 0) and a ready-made `tooltip` string. Disabled tasks count
-as failed/running but never as backlog/next.
+as failed/running but never as backlog/next. For the panel, `last_run` also
+carries `session_available` (the session transcript still exists), and
+`log <name> --json` adds `session_available` and `log_path` (the captured
+output file, or null once it is gone) to every run. `list --json` reads
+`tasks.json` once so a poll racing a write never sees two versions.
 
 ## Schedule math
 
@@ -155,6 +181,33 @@ For each enabled task with non-null `next_due <= now`:
 `exec "$CLAUDE_BIN" --resume <session_id>` from the run's recorded `cwd`
 (falling back to the task `cwd` if that directory is gone).
 
+`--terminal` (used by the panel) runs the same checks, then launches
+`setsid -f "$TERMINAL_BIN" oma-schedule resume <run-id>` and exits 0
+immediately; failures keep the messages above and exit 1 so the panel can show
+them inline.
+
+## Worktree pruning
+
+A run that leaves changes keeps its worktree + `oma-schedule/<task>-<stamp>-<id>`
+branch as the review artifact. The session transcript is independent of it
+(`claude --resume` works from any cwd), so pruning never breaks Resume — it
+only changes where a resumed Claude lands (main checkout instead of the branch).
+
+- **Done = merged.** `prune` removes a kept worktree when its branch is an
+  ancestor of the repo's default branch (`origin/HEAD`, else `main`, else
+  `master`) **or** `git cherry` shows every commit patch-equivalent there
+  (squash/rebase merges). Local only — never fetches. `git worktree remove`
+  without `--force`, so a dirty worktree is kept; the local branch is deleted
+  with `-D`, remote branches are never touched. A worktree already deleted by
+  hand just has its record cleared. The repo root comes from `worktree_path`,
+  so runs of a removed task are still cleaned up.
+- **Trigger = panel open.** The panel runs `prune` when opened and shows
+  `pruned N merged worktree(s)` in the header for 5 s. Age never deletes
+  anything; unmerged worktrees wait for you (delete by hand if unwanted).
+- **Visibility.** `list --json` adds per-task `worktrees` (kept count); the
+  row shows an `N worktrees` note and expanded history marks each run that
+  kept one (path in tooltip). No bar badge, no top-level count.
+
 ## Test seam / injectable environment
 
 All overridable via env, read once at CLI start:
@@ -168,7 +221,10 @@ All overridable via env, read once at CLI start:
 | `OMA_SCHEDULE_NOW` | `date +%s` | frozen clock for deterministic sweep/backlog tests |
 | `OMA_SCHEDULE_CLAUDE_HOME` | `~/.claude` | where `settings.json` and `projects/` are read |
 | `OMA_SCHEDULE_SWEEP_WAIT` | unset | `1` makes `sweep` wait for the runs it launched (tests only) |
+| `OMA_SCHEDULE_TERMINAL_BIN` | `xdg-terminal-exec` | terminal launcher for `resume --terminal`; fake in tests |
 
-Tests (`tests/test_cli.py`, pytest) drive `bin/oma-schedule` as a subprocess
+Tests (`tests/test_*.py`, pytest) drive `bin/oma-schedule` as a subprocess
 and assert on stdout, exit codes, and the JSON files. No bash internals are
-tested directly.
+tested directly. `tests/test_qml_smoke.py` runs quickshell offscreen (skips
+when it is absent); it proves the QML compiles and parses the contract, not
+layout or clicks.
