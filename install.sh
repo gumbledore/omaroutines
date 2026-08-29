@@ -72,7 +72,7 @@ if [[ -L $PLUGIN_DIR/$OLD_PLUGIN_ID ]]; then
   say "removed old plugin symlink $PLUGIN_DIR/$OLD_PLUGIN_ID"
 fi
 
-if [[ -e $UNIT_DIR/${OLD_UNITS[0]} || -e $UNIT_DIR/${OLD_UNITS[2]} ]]; then
+if [[ -e $UNIT_DIR/${OLD_UNITS[0]} || -L $UNIT_DIR/${OLD_UNITS[0]} || -e $UNIT_DIR/${OLD_UNITS[2]} || -L $UNIT_DIR/${OLD_UNITS[2]} ]]; then
   "$SYSTEMCTL" --user disable --now oma-schedule-sweep.timer 2>/dev/null || true
   "$SYSTEMCTL" --user stop oma-schedule-herdr.service 2>/dev/null || true
   rm -f "${OLD_UNITS[@]/#/$UNIT_DIR/}"
