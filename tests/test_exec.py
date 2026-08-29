@@ -272,3 +272,35 @@ def test_trigger_on_repo_without_commits_fails_cleanly(cli, state_home, tmp_path
     runs = json.loads((state_home / "oma-schedule" / "runs.json").read_text())["runs"]
     assert len(runs) == 1 and runs[0]["status"] == "failure"
     assert subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout.count("\n") == 1
+
+
+def test_invalid_settings_json_mode_fails_run_without_invoking_claude(
+    cli, state_home, git_repo, calls_dir, claude_home
+):
+    (claude_home / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "yolo"}}))
+    add_task(cli, "t1", git_repo, worktree="false")
+    r = cli("trigger", "t1")
+    assert r.returncode == 1
+    assert "invalid permission mode" in r.stderr
+    run = runs_for(state_home, "t1")[0]
+    assert run["status"] == "failure"
+    assert not list(calls_dir.glob("*.argv"))
+
+
+def test_log_files_are_private(cli, state_home, git_repo):
+    add_task(cli, "t1", git_repo, worktree="false")
+    cli("trigger", "t1")
+    logs = state_home / "oma-schedule" / "logs"
+    assert logs.stat().st_mode & 0o777 == 0o700
+    assert (logs / "1.out").stat().st_mode & 0o777 == 0o600
+
+
+def test_log_files_pruned_with_runs(cli, state_home, git_repo):
+    add_task(cli, "t1", git_repo, worktree="false")
+    for _ in range(22):
+        cli("trigger", "t1")
+    ids = {r["id"] for r in runs_for(state_home, "t1")}
+    assert len(ids) == 20
+    logs = state_home / "oma-schedule" / "logs"
+    on_disk = {int(p.stem) for p in logs.glob("*.out")}
+    assert on_disk == ids

@@ -140,12 +140,16 @@ change.
    Concurrent runs of the same task never collide because id is unique.
 4. Resolve permission mode: task `permission_mode` if set, else
    `jq -r .permissions.defaultMode ~/.claude/settings.json`, else `default`.
+   The result must be one of `default acceptEdits plan dontAsk bypassPermissions
+   auto` (also enforced at `add`/`edit`); anything else fails the run before
+   `claude` is invoked.
 5. `cd <run dir> && "$CLAUDE_BIN" -p "$prompt" --session-id "$sid"
    --permission-mode "$mode" --output-format json`. Runs are **not** serialized.
 6. After exit: if worktree has no changes (`git status --porcelain` empty AND
    no commits ahead of the base) → `git worktree remove --force` + delete
    branch, log `worktree_path/branch: null`. Otherwise keep and record.
-7. Finalize the log entry (end, status, exit_code) and prune to 20.
+7. Finalize the log entry (end, status, exit_code) and prune to 20; `logs/<id>.out`
+   files whose run was pruned are deleted alongside (logs live 0600 in a 0700 dir).
 
 `trigger` runs in the foreground. `sweep` recomputes `next_due` **before**
 launching each due task via `launch_run`: under the systemd service

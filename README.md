@@ -35,6 +35,18 @@ the CLI (`oma-schedule edit`). Runs that changed files keep their worktree
 (`<cwd>/.worktrees/…`) for review; opening the panel prunes the ones whose
 branch has since been merged (`oma-schedule prune` does the same from a shell).
 
+## Uninstall
+
+    ./install.sh --uninstall
+
+This disables and removes the `oma-schedule-sweep.timer` user units, drops the
+`~/.local/bin/oma-schedule` and plugin symlinks, and rescans plugins. Task,
+run, and log state in `~/.local/state/oma-schedule/` is kept; delete it by hand
+for a clean slate. Do this **before** `omarchy plugin remove` — removing the
+plugin folder alone leaves the timer firing a dead path every minute. Kept
+worktrees under each task's `<cwd>/.worktrees/` are ordinary git worktrees;
+`git worktree remove` them if you no longer want them.
+
 Dev loop: the plugin directory is a symlink, and the shell's recursive inotify
 watch does not follow it, so QML edits are not hot-reloaded (re-running
 `install.sh` re-reads the manifest but keeps the compiled QML). After editing

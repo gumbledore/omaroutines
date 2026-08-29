@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Link `oma-schedule` onto PATH and start the sweep timer.
+# `install.sh --uninstall` reverses it (timer, units, symlinks; state is kept).
 #
 # `omarchy plugin add` clones this repo and loads the QML, but the CLI and the
 # systemd timer do the real work and omarchy has no hook for installing those.
@@ -17,6 +18,25 @@ PLUGIN_ID="kmg.oma-claude-schedule"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/oma-schedule"
 
 say() { printf '  %s\n' "$*"; }
+
+# --- uninstall -------------------------------------------------------------
+# Reverses everything below. State (tasks/runs/logs) is left in place; the
+# final message says where it is. `omarchy plugin remove` alone would delete
+# the plugin folder and leave the timer firing a dead symlink every minute.
+
+if [[ ${1:-} == --uninstall ]]; then
+  systemctl --user disable --now oma-schedule-sweep.timer 2>/dev/null || true
+  rm -f "$UNIT_DIR/oma-schedule-sweep.timer" "$UNIT_DIR/oma-schedule-sweep.service"
+  systemctl --user daemon-reload
+  say "disabled and removed oma-schedule-sweep.timer"
+  [[ -L $BIN_DIR/oma-schedule ]] && rm -f "$BIN_DIR/oma-schedule" && say "removed $BIN_DIR/oma-schedule"
+  [[ -L $PLUGIN_DIR/$PLUGIN_ID ]] && rm -f "$PLUGIN_DIR/$PLUGIN_ID" && say "removed $PLUGIN_DIR/$PLUGIN_ID"
+  if command -v omarchy-shell >/dev/null; then
+    omarchy-shell shell rescanPlugins >/dev/null 2>&1 || say "NOTE: plugin rescan failed; run: omarchy restart shell"
+  fi
+  say "kept state in $STATE_DIR (delete it yourself if you want a clean slate)"
+  exit 0
+fi
 
 for dep in jq systemd-analyze claude uuidgen; do
   command -v "$dep" >/dev/null || { echo "install.sh: $dep is required" >&2; exit 1; }

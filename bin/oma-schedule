@@ -20,6 +20,9 @@ BACKLOG_TIMEOUT="${OMA_SCHEDULE_BACKLOG_TIMEOUT:-900}"
 CLAUDE_HOME="${OMA_SCHEDULE_CLAUDE_HOME:-$HOME/.claude}"
 TERMINAL_BIN="${OMA_SCHEDULE_TERMINAL_BIN:-xdg-terminal-exec}"
 RETAIN_RUNS=20
+# Claude Code --permission-mode values we will pass through. Anything else is
+# rejected at add/edit and again at run time (settings.json fallback included).
+PERM_MODES="default acceptEdits plan dontAsk bypassPermissions auto"
 GLYPH="󰃰"
 
 mkdir -p "$STATE_DIR"
@@ -37,8 +40,10 @@ lock() {
 }
 
 # Release the lock taken by lock(). Safe to call even if not currently held.
+# (No extra redirections here: `exec` without a command makes them permanent,
+# so `exec 9>&- 2>/dev/null` would silence stderr for the rest of the script.)
 unlock() {
-  exec 9>&- 2>/dev/null || true
+  exec 9>&-
 }
 
 # Apply a jq filter to a store file and replace it atomically. Held under the
@@ -107,6 +112,14 @@ validate_name() {
   local name="$1"
   [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || {
     echo "oma-schedule: invalid task name \"$name\" (allowed: letters, digits, . _ -)" >&2
+    return 1
+  }
+}
+
+validate_perm_mode() {
+  local mode="$1"
+  [[ " $PERM_MODES " == *" $mode "* ]] || {
+    echo "oma-schedule: invalid permission mode \"$mode\" (allowed: ${PERM_MODES// /, })" >&2
     return 1
   }
 }
@@ -202,7 +215,7 @@ cmd_add() {
       return 1
     }
   fi
-
+  [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
 
   lock
   apply "$TASKS" \
@@ -289,6 +302,7 @@ cmd_edit() {
   fi
 
   [[ $perm_mode == none ]] && perm_mode=""
+  [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
 
   lock
   apply "$TASKS" \
@@ -411,6 +425,7 @@ cmd_disable() {
 # Finalize a run-log entry (under lock) and prune that task's runs to the
 # newest RETAIN_RUNS; runs that still hold a worktree are exempt so `prune`
 # can find them later. wt_path/wt_branch "" mean "no worktree kept" -> null.
+# Log files follow runs.json: any logs/<id>.out with no matching run is removed.
 finalize_run() {
   local run_id="$1" task="$2" exit_code="$3" status="$4" sid="$5" mode="$6" \
     wt_path="$7" wt_branch="$8" run_dir="$9"
@@ -436,6 +451,12 @@ finalize_run() {
       | ($others + $kept + $mine) | sort_by(.id)
     )
   '
+  local live f
+  live=$(jq -r '.runs[].id' "$RUNS")
+  for f in "$STATE_DIR/logs"/*.out; do
+    [[ -f $f ]] || continue
+    grep -qx "$(basename "$f" .out)" <<<"$live" || rm -f "$f"
+  done
   unlock
 }
 
@@ -453,7 +474,7 @@ run_task() {
   perm_override=$(jq -r '.permission_mode // empty' <<<"$task_json")
   worktree_enabled=$(jq -r '.worktree' <<<"$task_json")
 
-  mkdir -p "$STATE_DIR/logs"
+  mkdir -p -m 700 "$STATE_DIR/logs"
 
   local sid start run_id
   sid=$(uuidgen)
@@ -473,12 +494,19 @@ run_task() {
   unlock
 
   local log_file="$STATE_DIR/logs/${run_id}.out"
+  (umask 077 && : >"$log_file")
 
   local mode="$perm_override"
   if [[ -z $mode ]]; then
     mode=$(jq -r '.permissions.defaultMode // empty' "$CLAUDE_HOME/settings.json" 2>/dev/null) || true
   fi
   [[ -z $mode ]] && mode="default"
+  if ! validate_perm_mode "$mode" 2>>"$log_file"; then
+    finalize_run "$run_id" "$name" 1 failure "$sid" "$mode" "" "" "$cwd"
+    echo "oma-schedule: invalid permission mode \"$mode\" for \"$name\"" >&2
+    echo "$run_id failure"
+    return 1
+  fi
 
   local run_dir="$cwd" wt_path="" wt_branch="" base_commit=""
   if [[ $worktree_enabled == true ]]; then

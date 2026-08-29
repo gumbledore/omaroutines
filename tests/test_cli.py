@@ -341,3 +341,18 @@ def test_edit_prompt_and_cwd(cli, state_home, cwd_dir, tmp_path):
     t = task_by_name(state_home, "t1")
     assert t["prompt"] == "new prompt"
     assert t["cwd"] == str(new_dir.resolve())
+
+
+def test_add_rejects_unknown_permission_mode(cli, state_home, cwd_dir):
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--permission-mode", "yolo")
+    assert r.returncode == 1
+    assert "invalid permission mode" in r.stderr
+    assert task_by_name(state_home, "t1") is None
+
+
+def test_edit_rejects_unknown_permission_mode(cli, state_home, cwd_dir):
+    cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir))
+    r = cli("edit", "t1", "--permission-mode", "yolo")
+    assert r.returncode == 1
+    assert "invalid permission mode" in r.stderr
+    assert task_by_name(state_home, "t1")["permission_mode"] is None
