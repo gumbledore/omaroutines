@@ -332,15 +332,25 @@ Panel {
           Layout.fillWidth: true
           spacing: Style.space(6)
           Text { text: "run as"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-          ButtonGroup {
-            options: root.agentChoices
-            value: addForm.agentChoice
-            foreground: root.fg
-            accent: root.accent
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            focusable: false
-            onChanged: function (v) { addForm.agentChoice = v }
+          // Flow, not ButtonGroup (a Row): with many kinds installed the
+          // chips must wrap instead of widening the panel.
+          Flow {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: root.agentChoices
+              delegate: Button {
+                required property var modelData
+                text: modelData.label
+                selected: modelData.value === addForm.agentChoice
+                bordered: true
+                foreground: root.fg
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: addForm.agentChoice = modelData.value
+              }
+            }
           }
         }
         RowLayout {
