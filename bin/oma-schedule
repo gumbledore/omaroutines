@@ -312,17 +312,34 @@ cmd_list() {
     for d in $(jq -r '[.tasks[].next_due // empty] | unique | .[]' "$TASKS"); do
       text_map=$(jq -c --argjson d "$d" --arg t "$(when_text "$d")" '. + {($d|tostring): $t}' <<<"$text_map")
     done
-    jq -c --argjson map "$text_map" '
-      {
-        count: (.tasks | length),
-        tasks: (.tasks | map(. + {
-          next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end)
-        }))
-      }
-      | . + {
-          active: (.count > 0),
-          tooltip: (if .count == 0 then "No scheduled tasks" else "\(.count) task(s)" end)
+    # Bar-widget summary (spec: .scratch/oma-schedule-bar-widget/spec.md).
+    # last_run = newest run per task; disabled tasks still count as
+    # failed/running but never as backlog/next.
+    jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" '
+      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end})}) | from_entries) as $last
+      | (.tasks | map(. + {
+          next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end),
+          last_run: ($last[.name] // null)
+        })) as $tasks
+      | ($tasks | map(select(.enabled and .next_due != null)) | min_by(.next_due)) as $n
+      | {
+          count: ($tasks | length),
+          tasks: $tasks,
+          enabled: ($tasks | map(select(.enabled)) | length),
+          failed: ($tasks | map(select(.last_run.status == "failure")) | length),
+          running: ($tasks | map(select(.last_run.status == "running")) | length),
+          backlog: ($tasks | map(select(.enabled and .backlog_since != null)) | length),
+          next: (if $n == null then null else {task: $n.name, next_due: $n.next_due, next_due_text: $n.next_due_text} end)
         }
+      | .badge = .failed + .backlog
+      | .active = (.badge > 0)
+      | .tooltip = (
+          if .enabled == 0 then "No enabled tasks"
+          else (if .next == null then "Next: none" else "Next: \(.next.task) \(.next.next_due_text)" end)
+            + (if .failed > 0 then " · \(.failed) failed" else "" end)
+            + (if .running > 0 then " · \(.running) running" else "" end)
+            + (if .backlog > 0 then " · \(.backlog) backlog" else "" end)
+          end)
     ' "$TASKS"
     return
   fi

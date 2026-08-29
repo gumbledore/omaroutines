@@ -16,9 +16,12 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
   `oma-schedule sweep` every minute; `Persistent=true` replays a missed sweep
   after sleep/boot.
 - `manifest.json` — Omarchy plugin manifest (`overlay` + `bar-widget` kinds).
-  QML files are out of scope for v0.1; the manifest declares entry points only.
+- `BarWidget.qml` — bar widget; renders only `badge`/`enabled`/`tooltip` from
+  `list --json`, re-polls on `tasks.json`/`runs.json` changes and every 60 s.
+  The overlay (`ScheduleFlow.qml`) is not built yet.
 - `install.sh` — symlinks CLI into `~/.local/bin`, symlinks units, `daemon-reload`,
-  `enable --now` the timer.
+  `enable --now` the timer, symlinks the repo into `~/.config/omarchy/plugins/<id>`
+  and rescans plugins.
 - No Python at runtime. `uv run pytest` is dev-only.
 
 ## State (`${XDG_STATE_HOME:-~/.local/state}/oma-schedule/`)
@@ -81,8 +84,13 @@ oma-schedule show-overlay
 ```
 
 Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
-mutate state. `list --json` returns `{count, tasks:[...], active, tooltip}`
-(bar-widget friendly, like `rem ls --json`).
+mutate state. `list --json` is the bar widget's whole data contract: each task
+gains `next_due_text` and `last_run` (`{id,status,trigger,start,end}` of its
+newest run, or null); top level carries `count`, `enabled`, `failed`,
+`running`, `backlog` (enabled tasks with a pending backlog), `badge`
+(= failed + backlog), `next` (earliest-due enabled non-manual task, or null),
+`active` (= badge > 0) and a ready-made `tooltip` string. Disabled tasks count
+as failed/running but never as backlog/next.
 
 ## Schedule math
 

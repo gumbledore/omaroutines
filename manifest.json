@@ -7,17 +7,15 @@
   "license": "MIT",
   "description": "Schedule unattended Claude Code runs with a run log and resumable sessions.",
   "kinds": [
-    "overlay",
     "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "overlay": "ScheduleFlow.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
     "displayName": "Claude Schedule",
-    "description": "Next due task and failed-run count; click to open the task list.",
+    "description": "Badge = failed + backlog tasks; tooltip names the next due task and any failed/running/backlog counts; dimmed when nothing is enabled.",
     "category": "Status",
     "defaultSection": "right",
     "allowMultiple": false

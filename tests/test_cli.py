@@ -123,7 +123,7 @@ def test_list_human_and_json(cli, state_home, cwd_dir):
     assert r.returncode == 0
     payload = json.loads(r.stdout)
     assert payload["count"] == 2
-    assert payload["active"] is True
+    assert payload["active"] is False  # healthy: nothing needs attention
     names = {t["name"] for t in payload["tasks"]}
     assert names == {"t1", "t2"}
     t2 = next(t for t in payload["tasks"] if t["name"] == "t2")

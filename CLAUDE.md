@@ -20,7 +20,7 @@ native trigger, run log, and UI, built on the same primitives as this machine's
 - `docs/design.md` — source of truth for scope and architecture
 - `bin/oma-schedule` — the CLI, sole writer of `~/.local/state/oma-schedule/{tasks,runs}.json`
 - `systemd/` — `oma-schedule-sweep.{timer,service}` (every-minute sweep)
-- `manifest.json`, `install.sh` — Omarchy plugin packaging (QML overlay/bar widget not yet built)
+- `manifest.json`, `BarWidget.qml`, `install.sh` — Omarchy plugin packaging + bar widget (overlay not yet built)
 - `tests/` — pytest suite driving the CLI as a subprocess
 
 ## How to run
