@@ -171,6 +171,7 @@ referenced there.
 ## Uninstall
 
     ./install.sh --uninstall
+    omarchy plugin remove gumbledore.omaroutines   # if installed with `omarchy plugin add`
 
 This disables and removes the `omaroutines-sweep.timer` and
 `omaroutines-herdr.service` user units, drops the `~/.local/bin/omaroutines`

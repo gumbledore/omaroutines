@@ -110,12 +110,18 @@ say "installed omaroutines-herdr.service (started on the first herdr run)"
 
 # --- the shell plugin (bar widget) ------------------------------------------
 
-if [[ -e $PLUGIN_DIR/$PLUGIN_ID && ! -L $PLUGIN_DIR/$PLUGIN_ID ]]; then
-  echo "install.sh: $PLUGIN_DIR/$PLUGIN_ID exists and is not a symlink; move it aside first" >&2
-  exit 1
+# `omarchy plugin add` clones straight into $PLUGIN_DIR/$PLUGIN_ID; running
+# from there needs no link.
+if [[ $(realpath -m "$PLUGIN_DIR/$PLUGIN_ID") == "$REPO_DIR" ]]; then
+  say "plugin already at $PLUGIN_DIR/$PLUGIN_ID"
+else
+  if [[ -e $PLUGIN_DIR/$PLUGIN_ID && ! -L $PLUGIN_DIR/$PLUGIN_ID ]]; then
+    echo "install.sh: $PLUGIN_DIR/$PLUGIN_ID exists and is not a symlink; move it aside first" >&2
+    exit 1
+  fi
+  ln -sfn "$REPO_DIR" "$PLUGIN_DIR/$PLUGIN_ID"
+  say "linked $PLUGIN_DIR/$PLUGIN_ID"
 fi
-ln -sfn "$REPO_DIR" "$PLUGIN_DIR/$PLUGIN_ID"
-say "linked $PLUGIN_DIR/$PLUGIN_ID"
 if command -v omarchy-shell >/dev/null; then
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || say "NOTE: plugin rescan failed; run: omarchy restart shell"
 fi
