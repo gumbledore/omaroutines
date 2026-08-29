@@ -1,5 +1,5 @@
 """Tests for ticket 03 (execution engine) + ticket 06 (log/resume), driven
-through `oma-schedule trigger/log/resume` against a fake `claude` binary
+through `omaroutines trigger/log/resume` against a fake `claude` binary
 (tests/conftest.py) and a throwaway git repo as task cwd.
 """
 
@@ -9,7 +9,7 @@ import subprocess
 
 
 def runs_json(state_home):
-    return json.loads((state_home / "oma-schedule" / "runs.json").read_text())
+    return json.loads((state_home / "omaroutines" / "runs.json").read_text())
 
 
 def runs_for(state_home, task):
@@ -51,7 +51,7 @@ def test_trigger_worktree_no_changes_is_removed(cli, state_home, git_repo, calls
     # worktree + branch cleaned up
     wt_list = git(git_repo, "worktree", "list").stdout
     assert ".worktrees" not in wt_list
-    branches = git(git_repo, "branch", "--list", "oma-schedule/*").stdout
+    branches = git(git_repo, "branch", "--list", "omaroutines/*").stdout
     assert branches.strip() == ""
 
     # claude ran inside the (now-removed) worktree, not the main checkout
@@ -71,7 +71,7 @@ def test_trigger_worktree_with_changes_is_kept(cli, state_home, git_repo):
     from pathlib import Path
 
     assert Path(run["worktree_path"]).is_dir()
-    branches = git(git_repo, "branch", "--list", "oma-schedule/*").stdout
+    branches = git(git_repo, "branch", "--list", "omaroutines/*").stdout
     assert run["worktree_branch"].split("/", 1)[1] in branches
 
 
@@ -243,7 +243,7 @@ def test_run_log_file_captures_claude_output(cli, state_home, git_repo):
     add_task(cli, "t1", git_repo, worktree="false")
     cli("trigger", "t1")
     run = runs_for(state_home, "t1")[0]
-    log_file = state_home / "oma-schedule" / "logs" / f"{run['id']}.out"
+    log_file = state_home / "omaroutines" / "logs" / f"{run['id']}.out"
     assert log_file.exists()
     assert "result" in log_file.read_text()
 
@@ -269,7 +269,7 @@ def test_trigger_on_repo_without_commits_fails_cleanly(cli, state_home, tmp_path
     cli("add", "t", "--prompt", "p", "--cwd", str(repo))
     r = cli("trigger", "t")
     assert r.returncode == 1
-    runs = json.loads((state_home / "oma-schedule" / "runs.json").read_text())["runs"]
+    runs = json.loads((state_home / "omaroutines" / "runs.json").read_text())["runs"]
     assert len(runs) == 1 and runs[0]["status"] == "failure"
     assert subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout.count("\n") == 1
 
@@ -290,7 +290,7 @@ def test_invalid_settings_json_mode_fails_run_without_invoking_claude(
 def test_log_files_are_private(cli, state_home, git_repo):
     add_task(cli, "t1", git_repo, worktree="false")
     cli("trigger", "t1")
-    logs = state_home / "oma-schedule" / "logs"
+    logs = state_home / "omaroutines" / "logs"
     assert logs.stat().st_mode & 0o777 == 0o700
     assert (logs / "1.out").stat().st_mode & 0o777 == 0o600
 
@@ -301,6 +301,6 @@ def test_log_files_pruned_with_runs(cli, state_home, git_repo):
         cli("trigger", "t1")
     ids = {r["id"] for r in runs_for(state_home, "t1")}
     assert len(ids) == 20
-    logs = state_home / "oma-schedule" / "logs"
+    logs = state_home / "omaroutines" / "logs"
     on_disk = {int(p.stem) for p in logs.glob("*.out")}
     assert on_disk == ids

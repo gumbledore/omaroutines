@@ -1,6 +1,6 @@
 #!/bin/bash
-# systemctl stub: logs argv; `--user start oma-schedule-herdr.service` brings
+# systemctl stub: logs argv; `--user start omaroutines-herdr.service` brings
 # the herdr stub's server "up" by removing $STUB_DIR/herdr-down.
 printf 'systemctl %s\n' "$*" >>"$STUB_LOG"
-[[ "$*" == *" start oma-schedule-herdr.service"* ]] && rm -f "$STUB_DIR/herdr-down"
+[[ "$*" == *" start omaroutines-herdr.service"* ]] && rm -f "$STUB_DIR/herdr-down"
 exit 0

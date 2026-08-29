@@ -32,7 +32,7 @@ def agents(stub_dir):
 
 
 def log_file(state_home, run):
-    return state_home / "oma-schedule" / "logs" / f"{run['id']}.out"
+    return state_home / "omaroutines" / "logs" / f"{run['id']}.out"
 
 
 @pytest.fixture
@@ -52,8 +52,8 @@ def test_server_started_and_enabled_when_down(herdr_cli, state_home, cwd_dir, st
     assert r.returncode == 0, r.stderr
     assert "run 1: success" in r.stdout
     calls = systemctl_calls(stub_dir)
-    assert calls == ["systemctl --user start oma-schedule-herdr.service", "systemctl --user enable oma-schedule-herdr.service"]
-    assert all(l.endswith("[HERDR_SESSION=oma-schedule]") for l in herdr_calls(stub_dir))
+    assert calls == ["systemctl --user start omaroutines-herdr.service", "systemctl --user enable omaroutines-herdr.service"]
+    assert all(l.endswith("[HERDR_SESSION=omaroutines]") for l in herdr_calls(stub_dir))
 
 
 def test_server_untouched_when_up(herdr_cli, state_home, cwd_dir, stub_dir):
@@ -174,7 +174,7 @@ def test_timeout_comes_from_task_then_settings(herdr_cli, state_home, cwd_dir, s
     herdr_cli("edit", "t1", "--herdr-timeout", "2")
     herdr_cli("trigger", "t1")
     assert "--timeout\n120000" in (stub_dir / "prompt-args.t1-3").read_text()
-    herdr_cli("trigger", "t1", env_overrides={"OMA_SCHEDULE_HERDR_TIMEOUT": "7"})
+    herdr_cli("trigger", "t1", env_overrides={"OMAROUTINES_HERDR_TIMEOUT": "7"})
     assert "--timeout\n7000" in (stub_dir / "prompt-args.t1-4").read_text()
 
 
@@ -244,7 +244,7 @@ def terminal_env(tmp_path):
     script.write_text(FAKE_TERMINAL_SCRIPT)
     script.chmod(0o755)
     log = tmp_path / "terminal.log"
-    return log, {"OMA_SCHEDULE_TERMINAL_BIN": str(script), "FAKE_TERMINAL_LOG": str(log)}
+    return log, {"OMAROUTINES_TERMINAL_BIN": str(script), "FAKE_TERMINAL_LOG": str(log)}
 
 
 def test_attach_focuses_agent_then_attaches_session(herdr_cli, state_home, cwd_dir, stub_dir):
@@ -253,10 +253,10 @@ def test_attach_focuses_agent_then_attaches_session(herdr_cli, state_home, cwd_d
     run = runs_for(state_home, "t1")[0]
     r = herdr_cli("attach", str(run["id"]))
     assert r.returncode == 0, r.stderr
-    assert "ATTACHED oma-schedule" in r.stdout
+    assert "ATTACHED omaroutines" in r.stdout
     calls = herdr_calls(stub_dir)
     assert calls[-2].startswith("herdr agent focus t1-1")
-    assert calls[-1].startswith("herdr session attach oma-schedule")
+    assert calls[-1].startswith("herdr session attach omaroutines")
 
 
 def test_attach_default_session_runs_bare_herdr(herdr_cli, state_home, cwd_dir, stub_dir):
@@ -278,7 +278,7 @@ def test_attach_terminal_detaches_via_launcher(herdr_cli, state_home, cwd_dir, t
     assert r.returncode == 0, r.stderr
     assert wait_for_file(log)
     argv = log.read_text().splitlines()
-    assert argv[0].endswith("/oma-schedule") and argv[1:] == ["attach", "1"]
+    assert argv[0].endswith("/omaroutines") and argv[1:] == ["attach", "1"]
 
 
 def test_attach_refuses_when_pane_gone_or_server_down(herdr_cli, state_home, cwd_dir, stub_dir, tmp_path):
@@ -302,9 +302,9 @@ def test_attach_and_resume_cross_hints(herdr_cli, state_home, cwd_dir, claude_ho
     herdr_cli("trigger", "h")
     herdr_cli("trigger", "c", env_overrides={"FAKE_CLAUDE_PROJECTS_DIR": str(claude_home / "projects")})
     r = herdr_cli("resume", "1")
-    assert r.returncode == 1 and "oma-schedule attach 1" in r.stderr
+    assert r.returncode == 1 and "omaroutines attach 1" in r.stderr
     r = herdr_cli("attach", "2")
-    assert r.returncode == 1 and "oma-schedule resume 2" in r.stderr
+    assert r.returncode == 1 and "omaroutines resume 2" in r.stderr
 
 
 # --- pane retention (ticket 04) -------------------------------------------------
@@ -395,8 +395,8 @@ def test_pruned_pane_removes_unchanged_worktree_but_keeps_changed(herdr_cli, sta
     wts = git_repo / ".worktrees"
     assert len(list(wts.iterdir())) == 2  # dirty first + live third
     from test_exec import git
-    branches = git(git_repo, "branch", "--list", "oma-schedule/*").stdout
-    assert branches.count("oma-schedule/") == 2
+    branches = git(git_repo, "branch", "--list", "omaroutines/*").stdout
+    assert branches.count("omaroutines/") == 2
 
 
 def test_pruned_runs_reenter_ordinary_retention(herdr_cli, state_home, cwd_dir):
@@ -408,7 +408,7 @@ def test_pruned_runs_reenter_ordinary_retention(herdr_cli, state_home, cwd_dir):
     assert len(runs) == 23
     assert [r["id"] for r in runs] == list(range(3, 26))
     assert sum(1 for r in runs if r["pane_id"]) == 3
-    logs = sorted(int(f.stem) for f in (state_home / "oma-schedule" / "logs").glob("*.out"))
+    logs = sorted(int(f.stem) for f in (state_home / "omaroutines" / "logs").glob("*.out"))
     assert logs == list(range(3, 26))
 
 
@@ -428,7 +428,7 @@ def test_sweep_runs_herdr_task(herdr_cli, state_home, cwd_dir):
     from test_sweep import SCHEDULE, T
     from test_sweep import add_task as add_frozen
     add_frozen(herdr_cli, "t1", cwd_dir, worktree="false", schedule=SCHEDULE)
-    r = herdr_cli("sweep", env_overrides={"OMA_SCHEDULE_NOW": str(T + 900), "OMA_SCHEDULE_SWEEP_WAIT": "1"})
+    r = herdr_cli("sweep", env_overrides={"OMAROUTINES_NOW": str(T + 900), "OMAROUTINES_SWEEP_WAIT": "1"})
     assert r.returncode == 0, r.stderr
     run = runs_for(state_home, "t1")[0]
     assert run["status"] == "success" and run["backend"] == "herdr" and run["trigger"] == "scheduled"
@@ -438,7 +438,7 @@ def test_pane_without_tab_id_is_never_orphaned(herdr_cli, state_home, cwd_dir, s
     herdr_cli("settings", "set", "herdr_retain", "1")
     add_task(herdr_cli, "t1", cwd_dir, worktree="false")
     herdr_cli("trigger", "t1")
-    p = state_home / "oma-schedule" / "runs.json"
+    p = state_home / "omaroutines" / "runs.json"
     d = json.loads(p.read_text())
     d["runs"][0]["tab_id"] = None  # legacy record
     p.write_text(json.dumps(d))

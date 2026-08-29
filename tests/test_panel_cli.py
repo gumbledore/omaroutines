@@ -1,4 +1,4 @@
-"""Panel-facing CLI additions (.scratch/oma-schedule-panel/spec.md):
+"""Panel-facing CLI additions (.scratch/omaroutines-panel/spec.md):
 `resume <id> --terminal`, `last_run.session_available` in `list --json`, and
 `session_available` / `log_path` in `log --json`. Session files come from
 the fake claude (FAKE_CLAUDE_PROJECTS_DIR), never hand-written.
@@ -42,7 +42,7 @@ def terminal_env(tmp_path, claude_home):
     script.write_text(FAKE_TERMINAL_SCRIPT)
     script.chmod(0o755)
     log = tmp_path / "terminal.log"
-    return log, {"OMA_SCHEDULE_TERMINAL_BIN": str(script), "FAKE_TERMINAL_LOG": str(log)}
+    return log, {"OMAROUTINES_TERMINAL_BIN": str(script), "FAKE_TERMINAL_LOG": str(log)}
 
 
 # --- resume --terminal ----------------------------------------------------------
@@ -58,7 +58,7 @@ def test_resume_terminal_launches_terminal_when_session_exists(cli, state_home, 
     assert r.returncode == 0, r.stderr
     assert wait_for_file(log), "terminal was never launched"
     argv = log.read_text().splitlines()
-    assert argv[0].endswith("/oma-schedule")
+    assert argv[0].endswith("/omaroutines")
     assert argv[1:] == ["resume", str(run["id"])]
 
 
@@ -120,10 +120,10 @@ def test_log_json_session_available_and_log_path(cli, state_home, cwd_dir, claud
     assert runs[1]["session_available"] is True
     assert runs[0]["session_available"] is False
     for x in runs:
-        assert x["log_path"] == str(state_home / "oma-schedule" / "logs" / f"{x['id']}.out")
-        assert (state_home / "oma-schedule" / "logs" / f"{x['id']}.out").exists()
+        assert x["log_path"] == str(state_home / "omaroutines" / "logs" / f"{x['id']}.out")
+        assert (state_home / "omaroutines" / "logs" / f"{x['id']}.out").exists()
 
-    (state_home / "oma-schedule" / "logs" / "1.out").unlink()
+    (state_home / "omaroutines" / "logs" / "1.out").unlink()
     runs = log_json(cli, "t1")
     assert runs[1]["log_path"] is None
     assert runs[0]["log_path"] is not None

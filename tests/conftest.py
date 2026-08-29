@@ -1,4 +1,4 @@
-"""Shared fixtures for bin/oma-schedule tests.
+"""Shared fixtures for bin/omaroutines tests.
 
 `cli` drives the CLI as a subprocess against an isolated XDG_STATE_HOME (per
 docs/design.md's test seam), wired to a fake `claude` binary and a throwaway
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI = REPO_ROOT / "bin" / "oma-schedule"
+CLI = REPO_ROOT / "bin" / "omaroutines"
 
 # Records argv/pwd per --session-id (avoids collisions between concurrent
 # runs of the same task) and echoes a fake `claude -p ... --output-format
@@ -156,20 +156,20 @@ def cli(state_home, config_home, calls_dir, fake_claude_bin, claude_home, notify
         env = dict(os.environ)
         env["XDG_STATE_HOME"] = str(state_home)
         env["XDG_CONFIG_HOME"] = str(config_home)
-        env["OMA_SCHEDULE_DEFAULT_AGENT_BIN"] = str(default_agent_bin)
-        env["OMA_SCHEDULE_HERDR_BIN"] = str(REPO_ROOT / "tests" / "stubs" / "herdr")
-        env["OMA_SCHEDULE_SYSTEMCTL_BIN"] = str(REPO_ROOT / "tests" / "stubs" / "systemctl")
+        env["OMAROUTINES_DEFAULT_AGENT_BIN"] = str(default_agent_bin)
+        env["OMAROUTINES_HERDR_BIN"] = str(REPO_ROOT / "tests" / "stubs" / "herdr")
+        env["OMAROUTINES_SYSTEMCTL_BIN"] = str(REPO_ROOT / "tests" / "stubs" / "systemctl")
         env["STUB_DIR"] = str(stub_dir)
         env["STUB_LOG"] = str(stub_dir / "log")
         for k in ("HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_ENV"):
             env.pop(k, None)
         env["TZ"] = "UTC"
-        env["OMA_SCHEDULE_CLAUDE_BIN"] = str(fake_claude_bin)
-        env["OMA_SCHEDULE_CLAUDE_HOME"] = str(claude_home)
-        env["OMA_SCHEDULE_NOTIFY_BIN"] = str(fake_notify_bin)
+        env["OMAROUTINES_CLAUDE_BIN"] = str(fake_claude_bin)
+        env["OMAROUTINES_CLAUDE_HOME"] = str(claude_home)
+        env["OMAROUTINES_NOTIFY_BIN"] = str(fake_notify_bin)
         env["FAKE_CLAUDE_CALLS_DIR"] = str(calls_dir)
         env["FAKE_NOTIFY_LOG"] = str(notify_log)
-        env.pop("OMA_SCHEDULE_NOW", None)
+        env.pop("OMAROUTINES_NOW", None)
         if env_overrides:
             env.update(env_overrides)
         return subprocess.run(

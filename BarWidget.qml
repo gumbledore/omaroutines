@@ -5,25 +5,25 @@ import qs.Commons
 import qs.Ui
 
 // Bar entry: one glyph, one badge, and the owner of the data poll. Everything
-// shown here or in the panel comes from `oma-schedule list --json`; the widget
+// shown here or in the panel comes from `omaroutines list --json`; the widget
 // re-runs it when the store changes or a minute passes and the panel binds to
 // the parsed result (no second poll). The panel is loaded as soon as the bar
-// attaches, so `oma-schedule show-overlay` (shell summon → open()) works
+// attaches, so `omaroutines show-overlay` (shell summon → open()) works
 // without the panel ever having been clicked.
 BarWidget {
   id: root
-  moduleName: "kmg.oma-claude-schedule"
+  moduleName: "gumbledore.omaroutines"
 
   readonly property string homePath: Quickshell.env("HOME")
-  readonly property string cliPath: homePath + "/.local/bin/oma-schedule"
+  readonly property string cliPath: homePath + "/.local/bin/omaroutines"
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (homePath + "/.local/state"))
-    + "/oma-schedule"
+    + "/omaroutines"
 
   // Parsed `list --json`.
   property var tasks: []
   property int badge: 0
   property int enabledCount: 0
-  property string tooltip: "Claude Schedule"
+  property string tooltip: "Omaroutines"
   property bool cliOk: false
   property var scheduleSettings: ({})   // list --json .settings (execution, agent, path, …)
   property var agentKinds: []           // list --json .agent_kinds (installed)
@@ -52,7 +52,7 @@ BarWidget {
     root.tasks = []
     root.badge = 0
     root.enabledCount = 0
-    root.tooltip = "Claude Schedule"
+    root.tooltip = "Omaroutines"
     root.cliOk = false
     root.scheduleSettings = ({})
     root.agentKinds = []
@@ -64,7 +64,7 @@ BarWidget {
     root.tasks = Array.isArray(data.tasks) ? data.tasks : []
     root.badge = Number(data.badge || 0)
     root.enabledCount = Number(data.enabled || 0)
-    root.tooltip = String(data.tooltip || "Claude Schedule")
+    root.tooltip = String(data.tooltip || "Omaroutines")
     root.cliOk = Array.isArray(data.tasks)
     root.scheduleSettings = (data.settings && typeof data.settings === "object") ? data.settings : ({})
     root.agentKinds = Array.isArray(data.agent_kinds) ? data.agent_kinds : []

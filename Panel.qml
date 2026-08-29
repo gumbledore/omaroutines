@@ -9,13 +9,13 @@ import qs.Commons
 import qs.Ui
 import "panel" as SchedulePanel
 
-// Bar-anchored task list (spec: .scratch/oma-schedule-panel/spec.md). The
+// Bar-anchored task list (spec: .scratch/omaroutines-panel/spec.md). The
 // widget owns the `list --json` poll; this file holds the window, the shared
 // one-at-a-time action loop, and expansion state. Rows are keyed by task name
 // so refreshes update in place.
 Panel {
   id: root
-  moduleName: "kmg.oma-claude-schedule"
+  moduleName: "gumbledore.omaroutines"
   manageIpc: false
 
   property var anchorItem: null
@@ -30,7 +30,7 @@ Panel {
 
   readonly property string cliPath: hostWidget ? hostWidget.cliPath : ""
   readonly property var tasks: hostWidget ? hostWidget.tasks : []
-  readonly property string summary: hostWidget ? hostWidget.tooltip : "Claude Schedule"
+  readonly property string summary: hostWidget ? hostWidget.tooltip : "Omaroutines"
   readonly property bool cliOk: hostWidget ? hostWidget.cliOk : false
   readonly property int badge: hostWidget ? hostWidget.badge : 0
   readonly property var scheduleSettings: hostWidget ? hostWidget.scheduleSettings : ({})
@@ -46,9 +46,9 @@ Panel {
   property bool addFormVisible: false
   readonly property string addKey: "+add"  // rowErrors key for the add form ('+' is not a valid task name)
   readonly property string tasksPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state"))
-    + "/oma-schedule/tasks.json"
+    + "/omaroutines/tasks.json"
   readonly property string settingsPath: scheduleSettings.path ? String(scheduleSettings.path)
-    : (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/oma-schedule/settings.json"
+    : (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/omaroutines/settings.json"
 
   function setMap(name, key, value) {
     var next = {}
@@ -152,7 +152,7 @@ Panel {
   // ---- footer: sweep timer -------------------------------------------------
   Process {
     id: timerProc
-    command: ["systemctl", "--user", "show", "oma-schedule-sweep.timer",
+    command: ["systemctl", "--user", "show", "omaroutines-sweep.timer",
       "-p", "ActiveState", "-p", "NextElapseUSecRealtime"]
     stdout: StdioCollector { id: timerOut; waitForEnd: true }
     onExited: function (exitCode) {
@@ -229,7 +229,7 @@ Panel {
           RowLayout {
             spacing: Style.space(8)
             Text {
-              text: "Claude Schedule"
+              text: "Omaroutines"
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
@@ -255,8 +255,8 @@ Panel {
               MouseArea { id: modeArea; anchors.fill: parent; hoverEnabled: true }
               PanelToolTip {
                 visible: modeArea.containsMouse
-                text: (root.execution === "herdr" ? "Runs are live agents in the hidden oma-schedule herdr session"
-                  : "Runs are claude -p (headless)") + "\nchange: oma-schedule settings set execution herdr|headless"
+                text: (root.execution === "herdr" ? "Runs are live agents in the hidden omaroutines herdr session"
+                  : "Runs are claude -p (headless)") + "\nchange: omaroutines settings set execution herdr|headless"
                 fontFamily: root.fontFamily
               }
             }
@@ -328,7 +328,7 @@ Panel {
           Layout.fillWidth: true
           spacing: Style.space(6)
           TextField { id: nameField; Layout.preferredWidth: Style.space(160); placeholderText: "name"; font.family: root.fontFamily; onAccepted: addForm.submit() }
-          TextField { id: cwdField; Layout.fillWidth: true; placeholderText: "cwd, e.g. ~/Nucleus/rad-onc"; font.family: root.fontFamily; onAccepted: addForm.submit() }
+          TextField { id: cwdField; Layout.fillWidth: true; placeholderText: "cwd, e.g. ~/projects/my-repo"; font.family: root.fontFamily; onAccepted: addForm.submit() }
         }
         TextField { id: promptField; Layout.fillWidth: true; placeholderText: "prompt"; font.family: root.fontFamily; onAccepted: addForm.submit() }
         RowLayout {
@@ -401,8 +401,8 @@ Panel {
         Layout.topMargin: Style.space(8)
         Layout.bottomMargin: Style.space(8)
         text: root.cliOk
-          ? "No tasks yet. Add one from a terminal:\n  oma-schedule add <name> --prompt \"…\" --cwd <repo> --schedule \"Mon *-*-* 09:00\""
-          : "oma-schedule is not responding — run install.sh, then refresh."
+          ? "No tasks yet. Add one from a terminal:\n  omaroutines add <name> --prompt \"…\" --cwd <repo> --schedule \"Mon *-*-* 09:00\""
+          : "omaroutines is not responding — run install.sh, then refresh."
         color: root.muted
         wrapMode: Text.Wrap
         font.family: root.fontFamily

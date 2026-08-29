@@ -1,27 +1,27 @@
-# oma-claude-schedule — design
+# omaroutines — design
 
 Source of truth for architecture. The full problem statement and user stories
-live in the spec that produced this (`.scratch/oma-claude-schedule/spec.md`,
+live in the spec that produced this (`.scratch/omaroutines/spec.md`,
 untracked); this file carries the decisions an implementer needs.
 
 ## Shape
 
 Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
 
-- `bin/oma-schedule` — single bash+jq CLI, **sole writer** of all JSON state.
+- `bin/omaroutines` — single bash+jq CLI, **sole writer** of all JSON state.
   Every write: `flock` on `$STATE_DIR/.lock` → `jq` filter → temp file →
   atomic `mv` (`rem`'s `apply()`).
-- `systemd/oma-schedule-sweep.{timer,service}` — `--user` oneshot,
+- `systemd/omaroutines-sweep.{timer,service}` — `--user` oneshot,
   `OnCalendar=*:*:00`, `Persistent=true`, `AccuracySec=1s`. Runs
-  `oma-schedule sweep` every minute; `Persistent=true` replays a missed sweep
+  `omaroutines sweep` every minute; `Persistent=true` replays a missed sweep
   after sleep/boot.
-- `systemd/oma-schedule-herdr.service` — `herdr server` with
-  `HERDR_SESSION=oma-schedule`, `Restart=on-failure`. Installed but not
+- `systemd/omaroutines-herdr.service` — `herdr server` with
+  `HERDR_SESSION=omaroutines`, `Restart=on-failure`. Installed but not
   enabled; the CLI starts **and** enables it before the first herdr run, so it
   survives login/reboot and `attach` keeps working. Never started for
   `herdr_session: "default"` (the user's foreground herdr).
 - `defaults/settings.json` — shipped settings, merged into
-  `${XDG_CONFIG_HOME:-~/.config}/oma-schedule/settings.json` on every read
+  `${XDG_CONFIG_HOME:-~/.config}/omaroutines/settings.json` on every read
   (defaults ⊕ user, `schema_version` pinned to the shipped value, invalid JSON
   → defaults + stderr warning, file never clobbered). Keys: `execution`
   (`headless`|`herdr`), `agent` (kind or null), `herdr_session`,
@@ -31,7 +31,7 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
 - `BarWidget.qml` — bar icon + owner of the `list --json` poll (re-run on
   `tasks.json`/`runs.json` changes, every 60 s, on right-click, and after every
   panel action). Exposes `open()/close()/toggle()/opened` so the shell's
-  `summon` (→ `oma-schedule show-overlay`) opens the panel. Left-click toggles.
+  `summon` (→ `omaroutines show-overlay`) opens the panel. Left-click toggles.
 - `Panel.qml` + `panel/{TaskRow,RunRow}.qml` — bar-anchored popup
   (`KeyboardPanel`; Escape / outside click / Tab cycling like other panels).
   One row per task: enable toggle, name (click = expand run history), schedule
@@ -59,15 +59,15 @@ checked with data, not just compiled.
   reverses all of it (both units) and keeps state + the herdr session dir.
 - No Python at runtime. `uv run pytest` is dev-only.
 
-## State (`${XDG_STATE_HOME:-~/.local/state}/oma-schedule/`)
+## State (`${XDG_STATE_HOME:-~/.local/state}/omaroutines/`)
 
 `tasks.json`:
 
 ```json
 {"version":1,"tasks":[{
-  "name":"lint-rad-onc",            // unique key, [A-Za-z0-9._-]+
+  "name":"lint-my-repo",            // unique key, [A-Za-z0-9._-]+
   "prompt":"...",                   // full prompt text, owned here
-  "cwd":"/home/kmg/Nucleus/rad-onc",// absolute; must be a git repo when worktree=true
+  "cwd":"/home/user/projects/my-repo",// absolute; must be a git repo when worktree=true
   "schedule":"Mon *-*-* 09:00:00",  // systemd calendar spec, or "manual"
   "permission_mode":null,           // null = inherit ~/.claude/settings.json permissions.defaultMode
   "worktree":true,
@@ -89,7 +89,7 @@ migration.
 ```json
 {"version":1,"nextRunId":1,"runs":[{
   "id":1,
-  "task":"lint-rad-onc",
+  "task":"lint-my-repo",
   "trigger":"manual",               // manual | scheduled | backlog-catchup
   "start":1756400000,
   "end":1756400300,                 // null while running
@@ -97,8 +97,8 @@ migration.
   "exit_code":0,
   "session_id":"uuid",
   "permission_mode":"auto",
-  "worktree_path":"/…/.worktrees/lint-rad-onc-20260828-1",  // null if none or removed
-  "worktree_branch":"oma-schedule/lint-rad-onc-…",           // null if none or removed
+  "worktree_path":"/…/.worktrees/lint-my-repo-20260828-1",  // null if none or removed
+  "worktree_branch":"omaroutines/lint-my-repo-…",           // null if none or removed
   "cwd":"/…",                       // directory the run actually executed in
   "backend":"headless",             // headless | herdr
   "reason":null,                    // null | blocked | timeout | exited | invalid_config
@@ -117,24 +117,24 @@ exempt (see Worktree pruning / Pane retention) so they never become orphans.
 ## CLI surface
 
 ```
-oma-schedule add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
+omaroutines add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                         [--permission-mode <mode>] [--worktree true|false]
                         [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
-oma-schedule edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
+omaroutines edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                         [--permission-mode <mode>|none] [--worktree true|false]
                         [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
-oma-schedule settings [get <key> | set <key> <value>]
-oma-schedule list [--json]
-oma-schedule rm <name>
-oma-schedule enable <name> | disable <name>
-oma-schedule trigger <name>              # run now (trigger=manual)
-oma-schedule sweep                       # called by the timer
-oma-schedule backlog run|skip <name>     # resolve a pending multi-miss backlog
-oma-schedule log <name> [--json]
-oma-schedule resume <run-id> [--terminal]  # headless runs
-oma-schedule attach <run-id> [--terminal]  # herdr runs
-oma-schedule prune                       # remove kept worktrees whose branch is merged
-oma-schedule show-overlay                # summon the panel
+omaroutines settings [get <key> | set <key> <value>]
+omaroutines list [--json]
+omaroutines rm <name>
+omaroutines enable <name> | disable <name>
+omaroutines trigger <name>              # run now (trigger=manual)
+omaroutines sweep                       # called by the timer
+omaroutines backlog run|skip <name>     # resolve a pending multi-miss backlog
+omaroutines log <name> [--json]
+omaroutines resume <run-id> [--terminal]  # headless runs
+omaroutines attach <run-id> [--terminal]  # herdr runs
+omaroutines prune                       # remove kept worktrees whose branch is merged
+omaroutines show-overlay                # summon the panel
 ```
 
 Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
@@ -189,7 +189,7 @@ path, replaced under herdr by the section below.
    `--session-id`, so the log links the session even if Claude never prints.
    (Deliberate deviation from the ticket's "captured from output": pushing
    the id is strictly more robust and `claude --session-id` is a real flag.)
-3. If `worktree`: `git -C "$cwd" worktree add -b oma-schedule/<name>-<stamp>-<runid>
+3. If `worktree`: `git -C "$cwd" worktree add -b omaroutines/<name>-<stamp>-<runid>
    "$cwd/.worktrees/<name>-<stamp>-<runid>"` (stamp = `%Y%m%d-%H%M%S`).
    Concurrent runs of the same task never collide because id is unique.
 4. Resolve permission mode: task `permission_mode` if set, else
@@ -235,7 +235,7 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
    settled from `agent list`: the pane, not the exit code, is the truth.
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is
    task `herdr_timeout` → settings `herdr_timeout_minutes` (minutes; the
-   `OMA_SCHEDULE_HERDR_TIMEOUT` env override is seconds, for tests).
+   `OMAROUTINES_HERDR_TIMEOUT` env override is seconds, for tests).
 5. Settle: `done`/`idle` → `success`; `blocked` → `failure/blocked`; still
    `working` at timeout → `failure/timeout`; agent gone or `unknown` →
    `failure/exited`. The sweep never kills a pane.
@@ -264,7 +264,7 @@ is re-applied afterwards, so at most 20 + `herdr_retain` runs per task exist.
 `trigger` runs in the foreground. `sweep` recomputes `next_due` **before**
 launching each due task via `launch_run`: under the systemd service
 (`$INVOCATION_ID` set) every run becomes its own transient unit
-(`systemd-run --user … oma-schedule run <name> <trigger>`) because a oneshot
+(`systemd-run --user … omaroutines run <name> <trigger>`) because a oneshot
 service kills plain `&` children the moment `sweep` exits; outside systemd
 (tests, a shell) it just backgrounds `run_task`.
 
@@ -278,9 +278,9 @@ For each enabled task with non-null `next_due <= now`:
   → **backlog**. Otherwise → single miss → fire (`trigger=scheduled`).
 - Backlog: set `backlog_since=now`, send ONE notification via
   `$NOTIFY_BIN` ("<n> missed runs of <task> — click to run the backlog") with
-  `--exec oma-schedule backlog run <name>`. Sweep does not block.
+  `--exec omaroutines backlog run <name>`. Sweep does not block.
   (`omarchy-notification-send` supports a single click action; "Skip" is the
-  timeout default, or `oma-schedule backlog skip <name>` explicitly.)
+  timeout default, or `omaroutines backlog skip <name>` explicitly.)
 - While `backlog_since` is set, the task is not re-notified. If
   `now - backlog_since >= BACKLOG_TIMEOUT` (default 900 s) a later sweep
   resolves it as skip: clears `backlog_since`, recomputes `next_due` from now.
@@ -289,20 +289,20 @@ For each enabled task with non-null `next_due <= now`:
 
 ## Resume
 
-`oma-schedule resume <run-id>` looks up the run's `session_id`, checks that
+`omaroutines resume <run-id>` looks up the run's `session_id`, checks that
 `~/.claude/projects/*/<session_id>.jsonl` exists; if not, prints
-`oma-schedule: session no longer available (run <id>)` and exits 1. Otherwise
+`omaroutines: session no longer available (run <id>)` and exits 1. Otherwise
 `exec "$CLAUDE_BIN" --resume <session_id>` from the run's recorded `cwd`
 (falling back to the task `cwd` if that directory is gone).
 
 `--terminal` (used by the panel) runs the same checks, then launches
-`setsid -f "$TERMINAL_BIN" oma-schedule resume <run-id>` and exits 0
+`setsid -f "$TERMINAL_BIN" omaroutines resume <run-id>` and exits 0
 immediately; failures keep the messages above and exit 1 so the panel can show
 them inline.
 
 ## Attach (herdr runs)
 
-`oma-schedule attach <run-id>` is `resume` for herdr runs: the run must be a
+`omaroutines attach <run-id>` is `resume` for herdr runs: the run must be a
 herdr run with a `pane_id` that is still present (`pane list`, so a down
 server also refuses), then `agent focus <agent_name>` and `exec herdr session
 attach <session>` (bare `herdr` for `"default"`). `--terminal` detaches via
@@ -316,7 +316,7 @@ Settings and agent pinning have no panel UI.
 
 ## Worktree pruning
 
-A run that leaves changes keeps its worktree + `oma-schedule/<task>-<stamp>-<id>`
+A run that leaves changes keeps its worktree + `omaroutines/<task>-<stamp>-<id>`
 branch as the review artifact. The session transcript is independent of it
 (`claude --resume` works from any cwd), so pruning never breaks Resume — it
 only changes where a resumed Claude lands (main checkout instead of the branch).
@@ -343,25 +343,25 @@ All overridable via env, read once at CLI start:
 | var | default | purpose |
 |---|---|---|
 | `XDG_STATE_HOME` | `~/.local/state` | isolates state per test |
-| `OMA_SCHEDULE_CLAUDE_BIN` | `claude` | fake `claude` script in tests; must honor `-p`, `--session-id`, `--permission-mode`, `--resume` |
-| `OMA_SCHEDULE_NOTIFY_BIN` | `omarchy-notification-send` | fake notifier in tests |
-| `OMA_SCHEDULE_BACKLOG_TIMEOUT` | `900` | seconds before an unanswered backlog resolves to skip |
-| `OMA_SCHEDULE_NOW` | `date +%s` | frozen clock for deterministic sweep/backlog tests |
-| `OMA_SCHEDULE_CLAUDE_HOME` | `~/.claude` | where `settings.json` and `projects/` are read |
-| `OMA_SCHEDULE_SWEEP_WAIT` | unset | `1` makes `sweep` wait for the runs it launched (tests only) |
-| `OMA_SCHEDULE_TERMINAL_BIN` | `xdg-terminal-exec` | terminal launcher for `resume/attach --terminal`; fake in tests |
+| `OMAROUTINES_CLAUDE_BIN` | `claude` | fake `claude` script in tests; must honor `-p`, `--session-id`, `--permission-mode`, `--resume` |
+| `OMAROUTINES_NOTIFY_BIN` | `omarchy-notification-send` | fake notifier in tests |
+| `OMAROUTINES_BACKLOG_TIMEOUT` | `900` | seconds before an unanswered backlog resolves to skip |
+| `OMAROUTINES_NOW` | `date +%s` | frozen clock for deterministic sweep/backlog tests |
+| `OMAROUTINES_CLAUDE_HOME` | `~/.claude` | where `settings.json` and `projects/` are read |
+| `OMAROUTINES_SWEEP_WAIT` | unset | `1` makes `sweep` wait for the runs it launched (tests only) |
+| `OMAROUTINES_TERMINAL_BIN` | `xdg-terminal-exec` | terminal launcher for `resume/attach --terminal`; fake in tests |
 | `XDG_CONFIG_HOME` | `~/.config` | isolates `settings.json` (and, for herdr itself, its session dir) |
-| `OMA_SCHEDULE_DEFAULT_AGENT_BIN` | `omarchy-default-agent` | prints the desktop's default agent kind, or nothing |
-| `OMA_SCHEDULE_HERDR_BIN` | `herdr` | `tests/stubs/herdr`: JSON-shaped stub whose `agent start`/`prompt --wait` outcomes come from control files in `$STUB_DIR`; logs every call and the `HERDR_SESSION` it saw |
-| `OMA_SCHEDULE_SYSTEMCTL_BIN` | `systemctl` | `tests/stubs/systemctl`: logs calls; `start oma-schedule-herdr.service` brings the stub server "up" |
-| `OMA_SCHEDULE_HERDR_TIMEOUT` | unset | seconds; overrides the minutes-based prompt timeout (tests) |
-| `OMA_SCHEDULE_HERDR_START_WAIT` | `20` | seconds to wait for the background server's socket |
+| `OMAROUTINES_DEFAULT_AGENT_BIN` | `omarchy-default-agent` | prints the desktop's default agent kind, or nothing |
+| `OMAROUTINES_HERDR_BIN` | `herdr` | `tests/stubs/herdr`: JSON-shaped stub whose `agent start`/`prompt --wait` outcomes come from control files in `$STUB_DIR`; logs every call and the `HERDR_SESSION` it saw |
+| `OMAROUTINES_SYSTEMCTL_BIN` | `systemctl` | `tests/stubs/systemctl`: logs calls; `start omaroutines-herdr.service` brings the stub server "up" |
+| `OMAROUTINES_HERDR_TIMEOUT` | unset | seconds; overrides the minutes-based prompt timeout (tests) |
+| `OMAROUTINES_HERDR_START_WAIT` | `20` | seconds to wait for the background server's socket |
 
-Tests (`tests/test_*.py`, pytest) drive `bin/oma-schedule` as a subprocess
+Tests (`tests/test_*.py`, pytest) drive `bin/omaroutines` as a subprocess
 and assert on stdout, exit codes, and the JSON files. No bash internals are
 tested directly. `tests/test_qml_smoke.py` runs quickshell offscreen (skips
 when it is absent); it proves the QML compiles and parses the contract, not
 layout or clicks. `tests/test_herdr_integration.py` is opt-in
-(`OMA_SCHEDULE_HERDR_INTEGRATION=1`): one real claude prompt through a
+(`OMAROUTINES_HERDR_INTEGRATION=1`): one real claude prompt through a
 throwaway herdr session under a temporary `XDG_CONFIG_HOME` — the only place
 herdr's actual state classification is exercised.

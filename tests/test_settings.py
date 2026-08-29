@@ -11,7 +11,7 @@ from test_exec import add_task, runs_for
 
 
 def settings_file(config_home):
-    return config_home / "oma-schedule" / "settings.json"
+    return config_home / "omaroutines" / "settings.json"
 
 
 def listing_task(cli, name):
@@ -30,7 +30,7 @@ def test_settings_creates_file_from_defaults(cli, config_home):
     assert printed["schema_version"] == 1
     assert printed["execution"] == "headless"
     assert printed["agent"] is None
-    assert printed["herdr_session"] == "oma-schedule"
+    assert printed["herdr_session"] == "omaroutines"
     assert printed["herdr_retain"] == 3
     assert printed["herdr_timeout_minutes"] == 60
     assert json.loads(settings_file(config_home).read_text()) == printed
@@ -177,7 +177,7 @@ def test_run_fails_when_no_agent_anywhere(cli, state_home, cwd_dir, default_agen
     assert run["status"] == "failure"
     assert run["reason"] == "invalid_config"
     assert run["backend"] == "headless"
-    assert "no default agent set" in (state_home / "oma-schedule" / "logs" / f"{run['id']}.out").read_text()
+    assert "no default agent set" in (state_home / "omaroutines" / "logs" / f"{run['id']}.out").read_text()
 
 
 def test_run_fails_when_omarchy_default_is_non_claude_under_headless(cli, state_home, cwd_dir, default_agent_bin, calls_dir):
@@ -202,7 +202,7 @@ def test_headless_run_still_succeeds_and_records_backend(cli, state_home, cwd_di
 
 def test_legacy_task_without_new_keys_still_lists_and_runs(cli, state_home, cwd_dir):
     add_task(cli, "t1", cwd_dir, worktree="false")
-    p = state_home / "oma-schedule" / "tasks.json"
+    p = state_home / "omaroutines" / "tasks.json"
     d = json.loads(p.read_text())
     for k in ("agent", "execution", "herdr_timeout"):
         d["tasks"][0].pop(k, None)
@@ -216,7 +216,7 @@ def test_list_json_exposes_settings_and_installed_kinds(cli, config_home, defaul
     r = cli("list", "--json")
     p = json.loads(r.stdout)
     assert p["settings"] == {"execution": "headless", "agent": "claude", "agent_source": "omarchy",
-                             "herdr_session": "oma-schedule", "path": str(settings_file(config_home))}
+                             "herdr_session": "omaroutines", "path": str(settings_file(config_home))}
     kinds = p["agent_kinds"]
     assert isinstance(kinds, list)
     assert set(kinds) <= {"pi", "omp", "opencode", "claude", "codex", "grok", "gemini", "copilot"}

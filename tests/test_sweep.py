@@ -1,6 +1,6 @@
 """Tests for tickets 04+05 (sweep + backlog), driven through
-`oma-schedule sweep` / `backlog run|skip` against a frozen clock
-(OMA_SCHEDULE_NOW) and a fake notifier (tests/conftest.py's fake_notify_bin).
+`omaroutines sweep` / `backlog run|skip` against a frozen clock
+(OMAROUTINES_NOW) and a fake notifier (tests/conftest.py's fake_notify_bin).
 
 Fixture clock: task added at T = Fri 2026-08-28 21:00:00 UTC with schedule
 "*-*-* *:00/15:00" (every 15 min) gets next_due = T+900 (21:15:00). The
@@ -16,7 +16,7 @@ SCHEDULE = "*-*-* *:00/15:00"
 
 
 def tasks_json(state_home):
-    return json.loads((state_home / "oma-schedule" / "tasks.json").read_text())
+    return json.loads((state_home / "omaroutines" / "tasks.json").read_text())
 
 
 def task_by_name(state_home, name):
@@ -27,7 +27,7 @@ def task_by_name(state_home, name):
 
 
 def runs_for(state_home, task):
-    runs = json.loads((state_home / "oma-schedule" / "runs.json").read_text())["runs"]
+    runs = json.loads((state_home / "omaroutines" / "runs.json").read_text())["runs"]
     return [r for r in runs if r["task"] == task]
 
 
@@ -35,13 +35,13 @@ def add_task(cli, name, cwd, now=T, **opts):
     args = ["add", name, "--prompt", "do the thing", "--cwd", str(cwd)]
     for k, v in opts.items():
         args += [f"--{k.replace('_', '-')}", str(v)]
-    r = cli(*args, env_overrides={"OMA_SCHEDULE_NOW": str(now)})
+    r = cli(*args, env_overrides={"OMAROUTINES_NOW": str(now)})
     assert r.returncode == 0, r.stderr
     return r
 
 
 def sweep(cli, now, **env):
-    env_overrides = {"OMA_SCHEDULE_NOW": str(now)}
+    env_overrides = {"OMAROUTINES_NOW": str(now)}
     env_overrides.update(env)
     return cli("sweep", env_overrides=env_overrides)
 
@@ -57,7 +57,7 @@ def notify_calls(notify_log):
 
 def test_single_miss_fires_silently(cli, state_home, cwd_dir, notify_log):
     add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
-    r = sweep(cli, T + 16 * 60, OMA_SCHEDULE_SWEEP_WAIT="1")
+    r = sweep(cli, T + 16 * 60, OMAROUTINES_SWEEP_WAIT="1")
     assert r.returncode == 0, r.stderr
     assert "t1: fired" in r.stdout
 
@@ -123,8 +123,8 @@ def test_backlog_pending_no_renotify(cli, state_home, cwd_dir, notify_log):
 
 def test_backlog_timeout_resolves_skip(cli, state_home, cwd_dir, notify_log):
     add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
-    sweep(cli, T + 46 * 60, OMA_SCHEDULE_BACKLOG_TIMEOUT="60")
-    r = sweep(cli, T + 47 * 60, OMA_SCHEDULE_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    r = sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
     assert r.returncode == 0, r.stderr
     assert "t1: backlog skipped (no response)" in r.stdout
 
@@ -142,7 +142,7 @@ def test_backlog_run_fires_once_in_foreground(cli, state_home, cwd_dir):
     add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
     sweep(cli, T + 46 * 60)
 
-    r = cli("backlog", "run", "t1", env_overrides={"OMA_SCHEDULE_NOW": str(T + 46 * 60)})
+    r = cli("backlog", "run", "t1", env_overrides={"OMAROUTINES_NOW": str(T + 46 * 60)})
     assert r.returncode == 0, r.stderr
     assert "run 1: success" in r.stdout
 
@@ -159,7 +159,7 @@ def test_backlog_skip_command(cli, state_home, cwd_dir):
     add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
     sweep(cli, T + 46 * 60)
 
-    r = cli("backlog", "skip", "t1", env_overrides={"OMA_SCHEDULE_NOW": str(T + 46 * 60)})
+    r = cli("backlog", "skip", "t1", env_overrides={"OMAROUTINES_NOW": str(T + 46 * 60)})
     assert r.returncode == 0, r.stderr
     assert "t1: backlog skipped" in r.stdout
 
@@ -185,7 +185,7 @@ def test_backlog_bad_verb_fails(cli, state_home, cwd_dir):
 
 def test_sweep_wait_produces_completed_run(cli, state_home, cwd_dir):
     add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
-    r = sweep(cli, T + 16 * 60, OMA_SCHEDULE_SWEEP_WAIT="1")
+    r = sweep(cli, T + 16 * 60, OMAROUTINES_SWEEP_WAIT="1")
     assert r.returncode == 0, r.stderr
 
     runs = runs_for(state_home, "t1")

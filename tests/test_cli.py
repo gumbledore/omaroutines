@@ -1,4 +1,4 @@
-"""Tests for bin/oma-schedule (tickets 01 + 02): state store, core CLI,
+"""Tests for bin/omaroutines (tickets 01 + 02): state store, core CLI,
 schedule validation, and next_due math via systemd-analyze calendar.
 
 Drives the CLI as a subprocess against an isolated XDG_STATE_HOME, per
@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI = REPO_ROOT / "bin" / "oma-schedule"
+CLI = REPO_ROOT / "bin" / "omaroutines"
 
 # Frozen clock: Fri 2026-08-28 20:46:40 UTC. Expected next_due values below
 # were computed independently via:
@@ -23,7 +23,7 @@ NEXT_DUE_EVERY_15MIN = 1787950800  # Fri 2026-08-28 21:00:00 UTC
 
 
 def tasks_json(state_home):
-    return json.loads((state_home / "oma-schedule" / "tasks.json").read_text())
+    return json.loads((state_home / "omaroutines" / "tasks.json").read_text())
 
 
 def task_by_name(state_home, name):
@@ -61,7 +61,7 @@ def test_add_requires_prompt_and_cwd(cli, state_home, cwd_dir):
     assert r.returncode != 0
     assert "cwd" in r.stderr
 
-    assert not (state_home / "oma-schedule" / "tasks.json").exists() or tasks_json(state_home)["tasks"] == []
+    assert not (state_home / "omaroutines" / "tasks.json").exists() or tasks_json(state_home)["tasks"] == []
 
 
 def test_add_cwd_made_absolute_and_must_exist(cli, state_home, tmp_path, cwd_dir):
@@ -184,7 +184,7 @@ def test_show_overlay_never_fails(cli, state_home):
 def test_help_and_unknown_command(cli):
     r = cli("--help")
     assert r.returncode == 0
-    assert "oma-schedule" in r.stdout
+    assert "omaroutines" in r.stdout
 
     r = cli("bogus-command")
     assert r.returncode == 1
@@ -233,7 +233,7 @@ def test_concurrent_enable_disable_rm_no_corruption(cli, state_home, cwd_dir):
 def test_schedule_daily_next_due(cli, state_home, cwd_dir):
     r = cli(
         "add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--schedule", "daily",
-        env_overrides={"OMA_SCHEDULE_NOW": str(FROZEN_NOW)},
+        env_overrides={"OMAROUTINES_NOW": str(FROZEN_NOW)},
     )
     assert r.returncode == 0, r.stderr
     t = task_by_name(state_home, "t1")
@@ -245,7 +245,7 @@ def test_schedule_weekly_next_due(cli, state_home, cwd_dir):
     r = cli(
         "add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir),
         "--schedule", "Mon *-*-* 09:00:00",
-        env_overrides={"OMA_SCHEDULE_NOW": str(FROZEN_NOW)},
+        env_overrides={"OMAROUTINES_NOW": str(FROZEN_NOW)},
     )
     assert r.returncode == 0, r.stderr
     t = task_by_name(state_home, "t1")
@@ -257,7 +257,7 @@ def test_schedule_every_15_minutes_next_due(cli, state_home, cwd_dir):
     r = cli(
         "add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir),
         "--schedule", "*-*-* *:00/15:00",
-        env_overrides={"OMA_SCHEDULE_NOW": str(FROZEN_NOW)},
+        env_overrides={"OMAROUTINES_NOW": str(FROZEN_NOW)},
     )
     assert r.returncode == 0, r.stderr
     t = task_by_name(state_home, "t1")
@@ -286,7 +286,7 @@ def test_edit_schedule_recomputes_next_due(cli, state_home, cwd_dir):
 
     r = cli(
         "edit", "t1", "--schedule", "daily",
-        env_overrides={"OMA_SCHEDULE_NOW": str(FROZEN_NOW)},
+        env_overrides={"OMAROUTINES_NOW": str(FROZEN_NOW)},
     )
     assert r.returncode == 0, r.stderr
     t = task_by_name(state_home, "t1")
@@ -297,7 +297,7 @@ def test_edit_schedule_recomputes_next_due(cli, state_home, cwd_dir):
 def test_edit_calendar_to_manual_clears_next_due(cli, state_home, cwd_dir):
     cli(
         "add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--schedule", "daily",
-        env_overrides={"OMA_SCHEDULE_NOW": str(FROZEN_NOW)},
+        env_overrides={"OMAROUTINES_NOW": str(FROZEN_NOW)},
     )
     assert task_by_name(state_home, "t1")["next_due"] is not None
 

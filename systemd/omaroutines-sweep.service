@@ -3,4 +3,4 @@ Description=Fire any scheduled Claude Code tasks that have come due
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/oma-schedule sweep
+ExecStart=%h/.local/bin/omaroutines sweep

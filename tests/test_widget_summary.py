@@ -1,5 +1,5 @@
-"""Bar-widget data contract: `oma-schedule list --json` summary fields
-(.scratch/oma-schedule-bar-widget/spec.md). States are produced through the
+"""Bar-widget data contract: `omaroutines list --json` summary fields
+(.scratch/omaroutines-bar-widget/spec.md). States are produced through the
 real run paths (fake claude exit / sleep, frozen-clock sweep), never by editing
 runs.json by hand.
 """
@@ -11,7 +11,7 @@ from test_sweep import SCHEDULE, T, add_task, sweep
 
 
 def listing(cli, now=None):
-    env = {"OMA_SCHEDULE_NOW": str(now)} if now else None
+    env = {"OMAROUTINES_NOW": str(now)} if now else None
     r = cli("list", "--json", env_overrides=env)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout)
@@ -104,7 +104,7 @@ def test_backlog_counted_and_cleared_by_skip(cli, state_home, cwd_dir):
     assert p["active"] is True
     assert p["tooltip"].endswith(" · 1 backlog")
 
-    cli("backlog", "skip", "t1", env_overrides={"OMA_SCHEDULE_NOW": str(T + 46 * 60)})
+    cli("backlog", "skip", "t1", env_overrides={"OMAROUTINES_NOW": str(T + 46 * 60)})
     p = listing(cli, now=T + 46 * 60)
     assert p["backlog"] == 0 and p["badge"] == 0 and p["active"] is False
 

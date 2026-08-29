@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "kmg.oma-claude-schedule",
-  "name": "Claude Schedule",
+  "id": "gumbledore.omaroutines",
+  "name": "Omaroutines",
   "version": "0.1.0",
   "author": "Kevin Goff",
   "license": "MIT",
-  "description": "Schedule unattended Claude Code runs with a run log and resumable sessions.",
+  "description": "Schedule unattended agent routines (Claude Code and other Omarchy agents) with a run log and resumable sessions.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Claude Schedule",
+    "displayName": "Omaroutines",
     "description": "Badge = failed + backlog tasks; tooltip names the next due task and any failed/running/backlog counts; dimmed when nothing is enabled.",
     "category": "Status",
     "defaultSection": "right",

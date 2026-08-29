@@ -1,5 +1,5 @@
 """Headless QML smoke test: `quickshell -p tests/qml/Harness.qml` offscreen
-with a fake HOME whose ~/.local/bin/oma-schedule echoes a canned
+with a fake HOME whose ~/.local/bin/omaroutines echoes a canned
 `list --json`. Proves the widget parses the contract and every panel file
 compiles; it does not test layout or clicks. Skips without quickshell.
 """
@@ -41,7 +41,7 @@ PAYLOAD = {
     "next": {"task": "lint", "next_due": 1756716400, "next_due_text": "Mon 1 Sep 09:00"},
     "tooltip": "Next: lint Mon 1 Sep 09:00 · 2 failed",
     "settings": {"execution": "herdr", "agent": "claude", "agent_source": "omarchy",
-                 "herdr_session": "oma-schedule", "path": "/tmp/settings.json"},
+                 "herdr_session": "omaroutines", "path": "/tmp/settings.json"},
     "agent_kinds": ["claude", "codex"],
 }
 
@@ -52,7 +52,7 @@ def run_harness(tmp_path, plugin_dir, payload=PAYLOAD):
     home = tmp_path / "home"
     bin_dir = home / ".local" / "bin"
     bin_dir.mkdir(parents=True)
-    fake = bin_dir / "oma-schedule"
+    fake = bin_dir / "omaroutines"
     fake.write_text("#!/bin/bash\n[[ $1 == list ]] && printf '%s\\n' " + repr(json.dumps(payload)) + "\nexit 0\n")
     fake.chmod(0o755)
 
@@ -69,7 +69,7 @@ def run_harness(tmp_path, plugin_dir, payload=PAYLOAD):
         "HOME": str(home),
         "XDG_STATE_HOME": str(home / ".local" / "state"),
         "QT_QPA_PLATFORM": "offscreen",
-        "OMA_SCHEDULE_PLUGIN_DIR": str(plugin_dir),
+        "OMAROUTINES_PLUGIN_DIR": str(plugin_dir),
     })
     env.pop("WAYLAND_DISPLAY", None)
     r = subprocess.run(

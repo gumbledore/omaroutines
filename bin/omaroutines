@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# oma-schedule - schedule unattended Claude Code runs.
+# omaroutines - schedule unattended Claude Code runs.
 #
 # This script is the ONLY writer of tasks.json and runs.json. The sweep timer
 # and any overlay shell out to it so locking lives in exactly one place.
@@ -9,25 +9,25 @@
 
 set -euo pipefail
 
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/oma-schedule"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omaroutines"
 TASKS="$STATE_DIR/tasks.json"
 RUNS="$STATE_DIR/runs.json"
 LOCK="$STATE_DIR/.lock"
 
-CLAUDE_BIN="${OMA_SCHEDULE_CLAUDE_BIN:-claude}"
-NOTIFY_BIN="${OMA_SCHEDULE_NOTIFY_BIN:-omarchy-notification-send}"
-BACKLOG_TIMEOUT="${OMA_SCHEDULE_BACKLOG_TIMEOUT:-900}"
-CLAUDE_HOME="${OMA_SCHEDULE_CLAUDE_HOME:-$HOME/.claude}"
-TERMINAL_BIN="${OMA_SCHEDULE_TERMINAL_BIN:-xdg-terminal-exec}"
-DEFAULT_AGENT_BIN="${OMA_SCHEDULE_DEFAULT_AGENT_BIN:-omarchy-default-agent}"
-HERDR_BIN="${OMA_SCHEDULE_HERDR_BIN:-herdr}"
-SYSTEMCTL_BIN="${OMA_SCHEDULE_SYSTEMCTL_BIN:-systemctl}"
-HERDR_UNIT="oma-schedule-herdr.service"
-HERDR_START_WAIT="${OMA_SCHEDULE_HERDR_START_WAIT:-20}" # seconds to wait for the socket
+CLAUDE_BIN="${OMAROUTINES_CLAUDE_BIN:-claude}"
+NOTIFY_BIN="${OMAROUTINES_NOTIFY_BIN:-omarchy-notification-send}"
+BACKLOG_TIMEOUT="${OMAROUTINES_BACKLOG_TIMEOUT:-900}"
+CLAUDE_HOME="${OMAROUTINES_CLAUDE_HOME:-$HOME/.claude}"
+TERMINAL_BIN="${OMAROUTINES_TERMINAL_BIN:-xdg-terminal-exec}"
+DEFAULT_AGENT_BIN="${OMAROUTINES_DEFAULT_AGENT_BIN:-omarchy-default-agent}"
+HERDR_BIN="${OMAROUTINES_HERDR_BIN:-herdr}"
+SYSTEMCTL_BIN="${OMAROUTINES_SYSTEMCTL_BIN:-systemctl}"
+HERDR_UNIT="omaroutines-herdr.service"
+HERDR_START_WAIT="${OMAROUTINES_HERDR_START_WAIT:-20}" # seconds to wait for the socket
 HERDR_QUICK=10                                          # seconds for list/read style calls
 HERDR_MUTATE=180                                        # seconds for create/start/close calls
 HERDR_AGENT_START_MS=120000                             # herdr-side cap on agent readiness
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/oma-schedule"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omaroutines"
 SETTINGS="$CONFIG_DIR/settings.json"
 DEFAULTS="$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/../defaults/settings.json"
 RETAIN_RUNS=20
@@ -80,7 +80,7 @@ apply() {
 # --- time --------------------------------------------------------------------
 
 # Frozen clock for deterministic tests; real clock otherwise.
-now() { echo "${OMA_SCHEDULE_NOW:-$(date +%s)}"; }
+now() { echo "${OMAROUTINES_NOW:-$(date +%s)}"; }
 
 when_text() { date -d "@$1" +'%a %-d %b %H:%M'; }
 
@@ -102,12 +102,12 @@ normalize_schedule() {
 
 # Compute next_due epoch for a (already-validated) expression. "manual" -> "".
 # Optional --base-time=@<epoch> forwarded to systemd-analyze (ticket 05 needs
-# it for "occurrence after next_due"); when OMA_SCHEDULE_NOW is set we always
+# it for "occurrence after next_due"); when OMAROUTINES_NOW is set we always
 # pass it so tests are deterministic.
 compute_next_due() {
   local expr="$1" base="${2:-}"
   [[ $expr == manual ]] && return 0
-  if [[ -z $base && -n ${OMA_SCHEDULE_NOW:-} ]]; then
+  if [[ -z $base && -n ${OMAROUTINES_NOW:-} ]]; then
     base="--base-time=@$(now)"
   fi
   local out elapse
@@ -126,7 +126,7 @@ compute_next_due() {
 validate_name() {
   local name="$1"
   [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || {
-    echo "oma-schedule: invalid task name \"$name\" (allowed: letters, digits, . _ -)" >&2
+    echo "omaroutines: invalid task name \"$name\" (allowed: letters, digits, . _ -)" >&2
     return 1
   }
 }
@@ -134,7 +134,7 @@ validate_name() {
 validate_perm_mode() {
   local mode="$1"
   [[ " $PERM_MODES " == *" $mode "* ]] || {
-    echo "oma-schedule: invalid permission mode \"$mode\" (allowed: ${PERM_MODES// /, })" >&2
+    echo "omaroutines: invalid permission mode \"$mode\" (allowed: ${PERM_MODES// /, })" >&2
     return 1
   }
 }
@@ -146,7 +146,7 @@ task_exists() {
 
 require_task() {
   task_exists "$1" || {
-    echo "oma-schedule: no such task \"$1\"" >&2
+    echo "omaroutines: no such task \"$1\"" >&2
     return 1
   }
 }
@@ -168,7 +168,7 @@ settings_json() {
   defaults=$(jq -c . "$DEFAULTS")
   if [[ -f $SETTINGS ]]; then
     if ! user=$(jq -c . "$SETTINGS" 2>/dev/null); then
-      echo "oma-schedule: $SETTINGS is not valid JSON, using defaults until it is fixed" >&2
+      echo "omaroutines: $SETTINGS is not valid JSON, using defaults until it is fixed" >&2
       echo "$defaults"
       return 0
     fi
@@ -192,14 +192,14 @@ setting() { settings_json | jq -r --arg k "$1" '.[$k] // empty'; }
 
 validate_agent() {
   [[ " $AGENT_KINDS " == *" $1 "* ]] || {
-    echo "oma-schedule: unsupported agent \"$1\" (allowed: ${AGENT_KINDS// /, })" >&2
+    echo "omaroutines: unsupported agent \"$1\" (allowed: ${AGENT_KINDS// /, })" >&2
     return 1
   }
 }
 
 validate_execution() {
   [[ " $EXECUTIONS " == *" $1 "* ]] || {
-    echo "oma-schedule: invalid execution \"$1\" (allowed: ${EXECUTIONS// /, })" >&2
+    echo "omaroutines: invalid execution \"$1\" (allowed: ${EXECUTIONS// /, })" >&2
     return 1
   }
 }
@@ -236,7 +236,7 @@ resolve_execution() {
 check_combo() {
   local kind="$1" source="$2" execution="$3"
   [[ -z $kind || $execution != headless || $kind == claude ]] && return 0
-  echo "oma-schedule: headless execution supports claude only (agent \"$kind\" comes from $source); use --execution herdr or --agent claude" >&2
+  echo "omaroutines: headless execution supports claude only (agent \"$kind\" comes from $source); use --execution herdr or --agent claude" >&2
   return 1
 }
 
@@ -298,11 +298,11 @@ herdr_server_up() {
 ensure_herdr_server() {
   herdr_server_up && return 0
   if [[ $(herdr_session) == default ]]; then
-    echo "oma-schedule: herdr server is not running (herdr_session is \"default\": start herdr first)" >&2
+    echo "omaroutines: herdr server is not running (herdr_session is \"default\": start herdr first)" >&2
     return 1
   fi
   "$SYSTEMCTL_BIN" --user start "$HERDR_UNIT" || {
-    echo "oma-schedule: could not start $HERDR_UNIT (run install.sh?)" >&2
+    echo "omaroutines: could not start $HERDR_UNIT (run install.sh?)" >&2
     return 1
   }
   "$SYSTEMCTL_BIN" --user enable "$HERDR_UNIT" >/dev/null 2>&1 || true
@@ -311,7 +311,7 @@ ensure_herdr_server() {
     herdr_server_up && return 0
     sleep 0.25
   done
-  echo "oma-schedule: herdr server did not come up within ${HERDR_START_WAIT}s" >&2
+  echo "omaroutines: herdr server did not come up within ${HERDR_START_WAIT}s" >&2
   return 1
 }
 
@@ -370,13 +370,13 @@ herdr_run() {
   HERDR_WS=$(hdq workspace list 2>/dev/null | jq -r --arg l "$label" '[.result.workspaces[] | select(.label == $l)][0].workspace_id // empty') || HERDR_WS=""
   if [[ -z $HERDR_WS ]]; then
     out=$(hdm workspace create --cwd "$cwd" --label "$label" 2>&1) || {
-      echo "oma-schedule: could not create herdr workspace: $out"
+      echo "omaroutines: could not create herdr workspace: $out"
       return 0
     }
     HERDR_WS=$(jq -r '.result.workspace.workspace_id' <<<"$out")
   fi
   out=$(hdm tab create --workspace "$HERDR_WS" --cwd "$run_dir" --no-focus 2>&1) || {
-    echo "oma-schedule: could not open a herdr tab: $out"
+    echo "omaroutines: could not open a herdr tab: $out"
     return 0
   }
   HERDR_PANE=$(jq -r '.result.root_pane.pane_id' <<<"$out")
@@ -395,7 +395,7 @@ herdr_run() {
   state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
   if [[ -z $state ]]; then
     # start failed or timed out; the pane, not the exit code, is the truth
-    echo "oma-schedule: herdr agent start: $out"
+    echo "omaroutines: herdr agent start: $out"
     state=$(herdr_agent_state "$agent") || state=""
     if [[ $state != idle && $state != done ]]; then
       HERDR_RESULT=$(map_agent_state "$state")
@@ -407,7 +407,7 @@ herdr_run() {
   out=$(timeout "$((timeout_s + 60))" "$HERDR_BIN_WRAP" _herdr agent prompt "$agent" "$prompt" --wait --timeout "$((timeout_s * 1000))" 2>&1) || true
   state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
   if [[ -z $state ]]; then
-    echo "oma-schedule: herdr agent prompt: $out"
+    echo "omaroutines: herdr agent prompt: $out"
     state=$(herdr_agent_state "$agent") || state=""
   fi
   HERDR_RESULT=$(map_agent_state "$state")
@@ -444,10 +444,10 @@ prune_task_panes() {
       state=$(jq -r --arg n "$agent" --arg p "$pane" '[.[] | select(.name == $n or .pane_id == $p)][0].agent_status // empty' <<<"$agents_json")
       [[ $state == working || $state == blocked || -z $tab ]] && continue
       hdm tab close "$tab" </dev/null >/dev/null 2>&1 || {
-        echo "oma-schedule: could not close pane $pane (run $id); keeping it"
+        echo "omaroutines: could not close pane $pane (run $id); keeping it"
         continue
       }
-      echo "oma-schedule: closed pane $pane (run $id, retain $retain)"
+      echo "omaroutines: closed pane $pane (run $id, retain $retain)"
     fi
     local drop_wt=false
     if [[ $wt_path != null ]] && worktree_unchanged "$wt_path" "$base"; then
@@ -483,7 +483,7 @@ validate_agent_fields() {
   [[ -z $agent ]] || validate_agent "$agent"
   [[ -z $execution ]] || validate_execution "$execution"
   [[ -z $herdr_timeout || $herdr_timeout =~ ^[0-9]+$ ]] || {
-    echo "oma-schedule: --herdr-timeout must be a whole number of minutes" >&2
+    echo "omaroutines: --herdr-timeout must be a whole number of minutes" >&2
     return 1
   }
   local kind source exec_resolved
@@ -491,7 +491,7 @@ validate_agent_fields() {
   exec_resolved=$(resolve_execution "$execution")
   check_combo "$kind" "$source" "$exec_resolved"
   [[ -n $perm_mode && $exec_resolved == herdr ]] &&
-    echo "oma-schedule: warning: permission mode is ignored under herdr" >&2
+    echo "omaroutines: warning: permission mode is ignored under herdr" >&2
   return 0
 }
 
@@ -499,7 +499,7 @@ cmd_add() {
   local name="${1:-}"
   shift || true
   [[ -z $name ]] && {
-    echo "oma-schedule: add requires a task name" >&2
+    echo "omaroutines: add requires a task name" >&2
     return 1
   }
   validate_name "$name"
@@ -540,40 +540,40 @@ cmd_add() {
       shift 2
       ;;
     *)
-      echo "oma-schedule: unknown option \"$1\"" >&2
+      echo "omaroutines: unknown option \"$1\"" >&2
       return 1
       ;;
     esac
   done
 
   [[ -z $prompt ]] && {
-    echo "oma-schedule: --prompt is required" >&2
+    echo "omaroutines: --prompt is required" >&2
     return 1
   }
   [[ -z $cwd ]] && {
-    echo "oma-schedule: --cwd is required" >&2
+    echo "omaroutines: --cwd is required" >&2
     return 1
   }
   cwd=$(realpath -m "$cwd")
   [[ -d $cwd ]] || {
-    echo "oma-schedule: --cwd \"$cwd\" is not a directory" >&2
+    echo "omaroutines: --cwd \"$cwd\" is not a directory" >&2
     return 1
   }
 
   ensure_store
   if task_exists "$name"; then
-    echo "oma-schedule: task \"$name\" already exists" >&2
+    echo "omaroutines: task \"$name\" already exists" >&2
     return 1
   fi
 
   local normalized next_due=null
   normalized=$(normalize_schedule "$schedule") || {
-    echo "oma-schedule: invalid schedule \"$schedule\"" >&2
+    echo "omaroutines: invalid schedule \"$schedule\"" >&2
     return 1
   }
   if [[ $normalized != manual ]]; then
     next_due=$(compute_next_due "$normalized") || {
-      echo "oma-schedule: could not compute next occurrence for \"$schedule\"" >&2
+      echo "omaroutines: could not compute next occurrence for \"$schedule\"" >&2
       return 1
     }
   fi
@@ -603,7 +603,7 @@ cmd_edit() {
   local name="${1:-}"
   shift || true
   [[ -z $name ]] && {
-    echo "oma-schedule: edit requires a task name" >&2
+    echo "omaroutines: edit requires a task name" >&2
     return 1
   }
   ensure_store
@@ -655,7 +655,7 @@ cmd_edit() {
       shift 2
       ;;
     *)
-      echo "oma-schedule: unknown option \"$1\"" >&2
+      echo "omaroutines: unknown option \"$1\"" >&2
       return 1
       ;;
     esac
@@ -664,7 +664,7 @@ cmd_edit() {
   if ((set_cwd)); then
     cwd=$(realpath -m "$cwd")
     [[ -d $cwd ]] || {
-      echo "oma-schedule: --cwd \"$cwd\" is not a directory" >&2
+      echo "omaroutines: --cwd \"$cwd\" is not a directory" >&2
       return 1
     }
   fi
@@ -672,12 +672,12 @@ cmd_edit() {
   local normalized="" next_due_json="null" have_next_due=0
   if ((set_schedule)); then
     normalized=$(normalize_schedule "$schedule") || {
-      echo "oma-schedule: invalid schedule \"$schedule\"" >&2
+      echo "omaroutines: invalid schedule \"$schedule\"" >&2
       return 1
     }
     if [[ $normalized != manual ]]; then
       next_due_json=$(compute_next_due "$normalized") || {
-        echo "oma-schedule: could not compute next occurrence for \"$schedule\"" >&2
+        echo "omaroutines: could not compute next occurrence for \"$schedule\"" >&2
         return 1
       }
     fi
@@ -738,7 +738,7 @@ cmd_list() {
     for d in $(jq -r '[.tasks[].next_due // empty] | unique | .[]' <<<"$tasks_json"); do
       text_map=$(jq -c --argjson d "$d" --arg t "$(when_text "$d")" '. + {($d|tostring): $t}' <<<"$text_map")
     done
-    # Bar-widget summary (spec: .scratch/oma-schedule-bar-widget/spec.md).
+    # Bar-widget summary (spec: .scratch/omaroutines-bar-widget/spec.md).
     # last_run = newest run per task; disabled tasks still count as
     # failed/running but never as backlog/next.
     # Agent resolution is done once here (settings + omarchy default) and
@@ -809,7 +809,7 @@ cmd_list() {
 cmd_rm() {
   local name="${1:-}"
   [[ -z $name ]] && {
-    echo "oma-schedule: rm requires a task name" >&2
+    echo "omaroutines: rm requires a task name" >&2
     return 1
   }
   ensure_store
@@ -822,7 +822,7 @@ cmd_rm() {
 cmd_set_enabled() {
   local name="${1:-}" value="$2"
   [[ -z $name ]] && {
-    echo "oma-schedule: task name required" >&2
+    echo "omaroutines: task name required" >&2
     return 1
   }
   ensure_store
@@ -929,7 +929,7 @@ run_task() {
 
   # A run that never launches an agent: log the message, record the reason.
   fail_config() {
-    echo "oma-schedule: $1" | tee -a "$log_file" >&2
+    echo "omaroutines: $1" | tee -a "$log_file" >&2
     finalize_run "$run_id" "$name" "$(jq -nc --arg c "$cwd" '{exit_code: 1, status: "failure", reason: "invalid_config", cwd: $c}')"
     echo "$run_id failure"
     return 1
@@ -958,15 +958,15 @@ run_task() {
   if [[ $worktree_enabled == true ]]; then
     local stamp
     stamp=$(date -d "@$start" +%Y%m%d-%H%M%S)
-    wt_branch="oma-schedule/${name}-${stamp}-${run_id}"
+    wt_branch="omaroutines/${name}-${stamp}-${run_id}"
     wt_path="$cwd/.worktrees/${name}-${stamp}-${run_id}"
     mkdir -p "$cwd/.worktrees"
     # rev-parse fails on a repo with no commits; treat it like a failed worktree add
     if ! base_commit=$(git -C "$cwd" rev-parse HEAD 2>>"$log_file") ||
       ! git -C "$cwd" worktree add -b "$wt_branch" "$wt_path" >>"$log_file" 2>&1; then
-      echo "oma-schedule: failed to create worktree for \"$name\"" >>"$log_file"
+      echo "omaroutines: failed to create worktree for \"$name\"" >>"$log_file"
       finalize_run "$run_id" "$name" "$(jq -nc --arg c "$cwd" '{exit_code: 1, status: "failure", cwd: $c}')"
-      echo "oma-schedule: failed to create worktree for \"$name\"" >&2
+      echo "omaroutines: failed to create worktree for \"$name\"" >&2
       echo "$run_id failure"
       return 1
     fi
@@ -979,7 +979,7 @@ run_task() {
     timeout_s=$(jq -r '.herdr_timeout // empty' <<<"$task_json")
     [[ -n $timeout_s ]] || timeout_s=$(setting herdr_timeout_minutes)
     timeout_s=$((timeout_s * 60))
-    [[ -n ${OMA_SCHEDULE_HERDR_TIMEOUT:-} ]] && timeout_s="$OMA_SCHEDULE_HERDR_TIMEOUT"
+    [[ -n ${OMAROUTINES_HERDR_TIMEOUT:-} ]] && timeout_s="$OMAROUTINES_HERDR_TIMEOUT"
     cache_herdr_session
     # errexit off: a failed herdr query must end in finalize_run, never in a
     # run stranded as "running" (the sweep's `run` path has no `||` guard).
@@ -995,7 +995,7 @@ run_task() {
     exit_code=0
     [[ $status == success ]] || exit_code=1
     mode=""
-    [[ -n $pane ]] || grep -h '^oma-schedule:' "$log_file" >&2 || true
+    [[ -n $pane ]] || grep -h '^omaroutines:' "$log_file" >&2 || true
   else
     set +e
     (cd "$run_dir" && "$CLAUDE_BIN" -p "$prompt" --session-id "$sid" --permission-mode "$mode" --output-format json) >"$log_file" 2>&1
@@ -1048,7 +1048,7 @@ remove_worktree() {
 cmd_trigger() {
   local name="${1:-}"
   [[ -z $name ]] && {
-    echo "oma-schedule: trigger requires a task name" >&2
+    echo "omaroutines: trigger requires a task name" >&2
     return 1
   }
   ensure_store
@@ -1115,9 +1115,9 @@ cmd_sweep() {
       apply "$TASKS" --arg name "$name" --argjson now "$sweep_now" \
         '.tasks |= map(if .name == $name then .backlog_since = $now else . end)'
       unlock
-      "$NOTIFY_BIN" -g "$GLYPH" "Claude Schedule: missed runs of $name" \
+      "$NOTIFY_BIN" -g "$GLYPH" "Omaroutines: missed runs of $name" \
         "Machine was away across several scheduled runs. Click to run the backlog once, or ignore to skip (auto-skip in $((BACKLOG_TIMEOUT / 60)) min)." \
-        --exec oma-schedule backlog run "$name" >/dev/null 2>&1 || true
+        --exec omaroutines backlog run "$name" >/dev/null 2>&1 || true
       echo "$name: backlog pending (notified)"
     else
       reschedule_from_now "$name" "$schedule"
@@ -1126,7 +1126,7 @@ cmd_sweep() {
     fi
   done <<<"$due"
 
-  if [[ ${OMA_SCHEDULE_SWEEP_WAIT:-} == 1 && ${#pids[@]} -gt 0 ]]; then
+  if [[ ${OMAROUTINES_SWEEP_WAIT:-} == 1 && ${#pids[@]} -gt 0 ]]; then
     wait "${pids[@]}" 2>/dev/null || true
   fi
 }
@@ -1136,10 +1136,10 @@ cmd_sweep() {
 # each run becomes its own transient unit; elsewhere (tests, a shell) `&` is fine.
 launch_run() {
   local name="$1" trigger="$2"
-  if [[ -n ${INVOCATION_ID:-} && ${OMA_SCHEDULE_SWEEP_WAIT:-} != 1 ]] && command -v systemd-run >/dev/null; then
-    systemd-run --user --quiet --collect --unit "oma-schedule-run-$name-$(now)-$$" \
+  if [[ -n ${INVOCATION_ID:-} && ${OMAROUTINES_SWEEP_WAIT:-} != 1 ]] && command -v systemd-run >/dev/null; then
+    systemd-run --user --quiet --collect --unit "omaroutines-run-$name-$(now)-$$" \
       --setenv=PATH="$PATH" "$(realpath "$0")" run "$name" "$trigger" || {
-      echo "oma-schedule: systemd-run failed for \"$name\"" >&2
+      echo "omaroutines: systemd-run failed for \"$name\"" >&2
     }
   else
     run_task "$name" "$trigger" >/dev/null 2>&1 &
@@ -1150,11 +1150,11 @@ launch_run() {
 cmd_backlog() {
   local verb="${1:-}" name="${2:-}"
   [[ $verb == run || $verb == skip ]] || {
-    echo "oma-schedule: backlog requires \"run\" or \"skip\" <name>" >&2
+    echo "omaroutines: backlog requires \"run\" or \"skip\" <name>" >&2
     return 1
   }
   [[ -z $name ]] && {
-    echo "oma-schedule: backlog $verb requires a task name" >&2
+    echo "omaroutines: backlog $verb requires a task name" >&2
     return 1
   }
   ensure_store
@@ -1185,7 +1185,7 @@ cmd_log() {
   local name="${1:-}"
   shift || true
   [[ -z $name ]] && {
-    echo "oma-schedule: log requires a task name" >&2
+    echo "omaroutines: log requires a task name" >&2
     return 1
   }
   ensure_store
@@ -1227,7 +1227,7 @@ cmd_resume() {
   local run_id="${1:-}" terminal=0
   [[ ${2:-} == --terminal ]] && terminal=1
   [[ -z $run_id ]] && {
-    echo "oma-schedule: resume requires a run id" >&2
+    echo "omaroutines: resume requires a run id" >&2
     return 1
   }
   ensure_store
@@ -1235,7 +1235,7 @@ cmd_resume() {
   local run
   run=$(jq -c --argjson id "$run_id" '.runs[] | select(.id == $id)' "$RUNS" 2>/dev/null) || run=""
   [[ -z $run ]] && {
-    echo "oma-schedule: no such run \"$run_id\"" >&2
+    echo "omaroutines: no such run \"$run_id\"" >&2
     return 1
   }
 
@@ -1245,11 +1245,11 @@ cmd_resume() {
   rcwd=$(jq -r '.cwd' <<<"$run")
 
   [[ $(jq -r '.backend // "headless"' <<<"$run") == herdr ]] && {
-    echo "oma-schedule: run $run_id is a herdr run; use: oma-schedule attach $run_id" >&2
+    echo "omaroutines: run $run_id is a herdr run; use: omaroutines attach $run_id" >&2
     return 1
   }
   if ! compgen -G "$CLAUDE_HOME/projects/*/${sid}.jsonl" >/dev/null; then
-    echo "oma-schedule: session no longer available (run $run_id)" >&2
+    echo "omaroutines: session no longer available (run $run_id)" >&2
     return 1
   fi
 
@@ -1271,7 +1271,7 @@ cmd_attach() {
   local run_id="${1:-}" terminal=0
   [[ ${2:-} == --terminal ]] && terminal=1
   [[ -z $run_id ]] && {
-    echo "oma-schedule: attach requires a run id" >&2
+    echo "omaroutines: attach requires a run id" >&2
     return 1
   }
   ensure_store
@@ -1279,18 +1279,18 @@ cmd_attach() {
   local run
   run=$(jq -c --argjson id "$run_id" '.runs[] | select(.id == $id)' "$RUNS" 2>/dev/null) || run=""
   [[ -z $run ]] && {
-    echo "oma-schedule: no such run \"$run_id\"" >&2
+    echo "omaroutines: no such run \"$run_id\"" >&2
     return 1
   }
   [[ $(jq -r '.backend // "headless"' <<<"$run") == herdr ]] || {
-    echo "oma-schedule: run $run_id is a headless run; use: oma-schedule resume $run_id" >&2
+    echo "omaroutines: run $run_id is a headless run; use: omaroutines resume $run_id" >&2
     return 1
   }
   local pane agent
   pane=$(jq -r '.pane_id // empty' <<<"$run")
   agent=$(jq -r '.agent_name // empty' <<<"$run")
   if [[ -z $pane ]] || ! live_panes_json | jq -e --arg p "$pane" 'index($p) != null' >/dev/null; then
-    echo "oma-schedule: pane not available for run $run_id (pruned, closed, or herdr server down)" >&2
+    echo "omaroutines: pane not available for run $run_id (pruned, closed, or herdr server down)" >&2
     return 1
   fi
   if ((terminal)); then
@@ -1375,15 +1375,15 @@ cmd_settings() {
     settings_json | jq .
     ;;
   get)
-    [[ -n $key ]] || { echo "oma-schedule: settings get requires a key" >&2; return 1; }
+    [[ -n $key ]] || { echo "omaroutines: settings get requires a key" >&2; return 1; }
     settings_json | jq -e --arg k "$key" 'has($k)' >/dev/null || {
-      echo "oma-schedule: unknown setting \"$key\"" >&2
+      echo "omaroutines: unknown setting \"$key\"" >&2
       return 1
     }
     settings_json | jq -r --arg k "$key" '.[$k]'
     ;;
   set)
-    [[ -n $key && $# -ge 3 ]] || { echo "oma-schedule: settings set requires <key> <value>" >&2; return 1; }
+    [[ -n $key && $# -ge 3 ]] || { echo "omaroutines: settings set requires <key> <value>" >&2; return 1; }
     local json
     case "$key" in
     execution)
@@ -1399,15 +1399,15 @@ cmd_settings() {
       fi
       ;;
     herdr_session)
-      [[ $value =~ ^[A-Za-z0-9._-]+$ ]] || { echo "oma-schedule: invalid session name \"$value\"" >&2; return 1; }
+      [[ $value =~ ^[A-Za-z0-9._-]+$ ]] || { echo "omaroutines: invalid session name \"$value\"" >&2; return 1; }
       json=$(jq -n --arg v "$value" '$v')
       ;;
     herdr_retain | herdr_timeout_minutes)
-      [[ $value =~ ^[1-9][0-9]*$ ]] || { echo "oma-schedule: $key must be a whole number >= 1" >&2; return 1; }
+      [[ $value =~ ^[1-9][0-9]*$ ]] || { echo "omaroutines: $key must be a whole number >= 1" >&2; return 1; }
       json=$value
       ;;
     *)
-      echo "oma-schedule: unknown or read-only setting \"$key\"" >&2
+      echo "omaroutines: unknown or read-only setting \"$key\"" >&2
       return 1
       ;;
     esac
@@ -1423,40 +1423,40 @@ cmd_settings() {
     echo "set: $key"
     ;;
   *)
-    echo "oma-schedule: settings takes no verb, \"get <key>\" or \"set <key> <value>\"" >&2
+    echo "omaroutines: settings takes no verb, \"get <key>\" or \"set <key> <value>\"" >&2
     return 1
     ;;
   esac
 }
 
-cmd_show_overlay() { omarchy-shell shell summon kmg.oma-claude-schedule "{}" >/dev/null 2>&1 || true; }
+cmd_show_overlay() { omarchy-shell shell summon gumbledore.omaroutines "{}" >/dev/null 2>&1 || true; }
 
 usage() {
   cat <<'EOF'
 Usage:
-  oma-schedule add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
+  omaroutines add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                           [--permission-mode <mode>] [--worktree true|false]
                           [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
-  oma-schedule edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
+  omaroutines edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                           [--permission-mode <mode>|none] [--worktree true|false]
                           [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
-  oma-schedule settings [get <key> | set <key> <value>]
+  omaroutines settings [get <key> | set <key> <value>]
                                        show / read / write settings.json
-  oma-schedule list [--json]           list tasks
-  oma-schedule rm <name>               remove a task
-  oma-schedule enable <name>           re-enable a disabled task
-  oma-schedule disable <name>          disable without deleting
-  oma-schedule trigger <name>          run now
-  oma-schedule sweep                   fire due tasks (called by the timer)
-  oma-schedule backlog run|skip <name> resolve a pending backlog notification
-  oma-schedule log <name> [--json]     show a task's run history
-  oma-schedule resume <run-id> [--terminal]
+  omaroutines list [--json]           list tasks
+  omaroutines rm <name>               remove a task
+  omaroutines enable <name>           re-enable a disabled task
+  omaroutines disable <name>          disable without deleting
+  omaroutines trigger <name>          run now
+  omaroutines sweep                   fire due tasks (called by the timer)
+  omaroutines backlog run|skip <name> resolve a pending backlog notification
+  omaroutines log <name> [--json]     show a task's run history
+  omaroutines resume <run-id> [--terminal]
                                        resume a past headless run's Claude session
                                        (--terminal: in a new terminal window)
-  oma-schedule attach <run-id> [--terminal]
+  omaroutines attach <run-id> [--terminal]
                                        attach to a herdr run's pane
-  oma-schedule prune                   remove kept worktrees whose branch is merged
-  oma-schedule show-overlay            open the task panel
+  omaroutines prune                   remove kept worktrees whose branch is merged
+  omaroutines show-overlay            open the task panel
 
 Default --schedule is "manual" (never fires on its own). Schedule expressions
 are systemd calendar specs, validated via `systemd-analyze calendar`.

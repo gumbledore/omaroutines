@@ -1,7 +1,7 @@
 """Opt-in end-to-end check against a real herdr server: the only place
 herdr's actual done/idle/blocked classification is exercised.
 
-    OMA_SCHEDULE_HERDR_INTEGRATION=1 uv run pytest tests/test_herdr_integration.py -s
+    OMAROUTINES_HERDR_INTEGRATION=1 uv run pytest tests/test_herdr_integration.py -s
 
 Starts `herdr server` for a throwaway named session, runs one trivial
 claude prompt through the real CLI path (systemctl stays stubbed so the
@@ -25,8 +25,8 @@ from test_exec import add_task, runs_for  # noqa: F401
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("OMA_SCHEDULE_HERDR_INTEGRATION") != "1" or shutil.which("herdr") is None,
-    reason="set OMA_SCHEDULE_HERDR_INTEGRATION=1 with herdr on PATH",
+    os.environ.get("OMAROUTINES_HERDR_INTEGRATION") != "1" or shutil.which("herdr") is None,
+    reason="set OMAROUTINES_HERDR_INTEGRATION=1 with herdr on PATH",
 )
 
 
@@ -50,7 +50,7 @@ def short_config_home():
 
 @pytest.fixture
 def session(short_config_home):
-    name = f"oma-schedule-test-{os.getpid()}"
+    name = f"omaroutines-test-{os.getpid()}"
     server = subprocess.Popen(["herdr", "server"], env=herdr_env(short_config_home, name),
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
@@ -69,7 +69,7 @@ def session(short_config_home):
 
 
 def test_real_claude_prompt_settles_as_success(cli, state_home, short_config_home, session):
-    env = {"XDG_CONFIG_HOME": str(short_config_home), "OMA_SCHEDULE_HERDR_BIN": "herdr"}
+    env = {"XDG_CONFIG_HOME": str(short_config_home), "OMAROUTINES_HERDR_BIN": "herdr"}
     assert cli("settings", "set", "execution", "herdr", env_overrides=env).returncode == 0
     assert cli("settings", "set", "herdr_session", session, env_overrides=env).returncode == 0
     r = cli("add", "ping", "--prompt", "Reply with exactly the word PONG and nothing else.",
@@ -80,6 +80,6 @@ def test_real_claude_prompt_settles_as_success(cli, state_home, short_config_hom
     assert r.returncode == 0, r.stderr + r.stdout
     run = runs_for(state_home, "ping")[0]
     assert run["status"] == "success" and run["backend"] == "herdr" and run["pane_id"]
-    log = (state_home / "oma-schedule" / "logs" / f"{run['id']}.out").read_text()
+    log = (state_home / "omaroutines" / "logs" / f"{run['id']}.out").read_text()
     assert "transcript" in log
     assert herdr(short_config_home, session, "agent", "list").stdout.count('"name":"ping-1"') == 1

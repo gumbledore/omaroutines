@@ -1,4 +1,4 @@
-"""`oma-schedule prune`: remove worktrees whose branch is merged into the
+"""`omaroutines prune`: remove worktrees whose branch is merged into the
 default branch (ancestor or squash-equivalent), clear their run records, and
 never touch unmerged ones. Worktrees are produced by real runs (fake claude
 with FAKE_CLAUDE_TOUCH=1), never hand-built.
@@ -32,7 +32,7 @@ def run_by_id(cli, name, run_id):
 
 
 def branches(repo):
-    return git(repo, "branch", "--list", "oma-schedule/*").stdout.split()
+    return git(repo, "branch", "--list", "omaroutines/*").stdout.split()
 
 
 def test_prune_removes_fast_forward_merged_worktree(cli, state_home, git_repo):

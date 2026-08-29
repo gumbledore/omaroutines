@@ -5,12 +5,12 @@ import qs.Commons
 // Headless smoke test root (tests/test_qml_smoke.py). Loads the real
 // BarWidget.qml without a bar (so its layer-shell panel stays unloaded — no
 // PanelWindow backend exists offscreen), waits for it to parse the fake
-// `oma-schedule list --json`, then compile-checks every other QML file and
+// `omaroutines list --json`, then compile-checks every other QML file and
 // reports on stdout. Exit code 0 = pass.
 ShellRoot {
   id: root
 
-  readonly property string pluginDir: "file://" + Quickshell.env("OMA_SCHEDULE_PLUGIN_DIR")
+  readonly property string pluginDir: "file://" + Quickshell.env("OMAROUTINES_PLUGIN_DIR")
   property bool done: false
 
   function finish(code) {
@@ -38,7 +38,7 @@ ShellRoot {
     property bool actionBusy: false
     property string armedRemove: ""
     property var rowErrors: ({})
-    property string cliPath: "oma-schedule"
+    property string cliPath: "omaroutines"
     property color fg: "white"
     property color muted: "gray"
     property color accent: "blue"
