@@ -80,8 +80,13 @@ def test_add_cwd_made_absolute_and_must_exist(cli, state_home, tmp_path, cwd_dir
 
 
 def test_add_name_must_match_pattern_and_be_unique(cli, state_home, cwd_dir):
-    r = cli("add", "bad name!", "--prompt", "hi", "--cwd", str(cwd_dir))
-    assert r.returncode != 0
+    # herdr agent-name rule: lowercase letter first, [a-z0-9_-], max 20 chars
+    for bad in ("bad name!", "Test", "a.b", "-x", "1st", "a" * 21):
+        r = cli("add", bad, "--prompt", "hi", "--cwd", str(cwd_dir))
+        assert r.returncode != 0, bad
+        assert "invalid task name" in r.stderr
+    r = cli("add", "ok_name-1", "--prompt", "hi", "--cwd", str(cwd_dir))
+    assert r.returncode == 0, r.stderr
 
     r = cli("add", "dup", "--prompt", "hi", "--cwd", str(cwd_dir))
     assert r.returncode == 0, r.stderr

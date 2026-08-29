@@ -53,7 +53,8 @@ Or click the bar icon and use **+**:
   <img src="docs/screenshots/add-task.png" alt="The add-task form: name, cwd, prompt, a run-in (headless | herdr) and run-as (default, pi, omp, opencode, claude, codex, grok, gemini, copilot) chip row, schedule, permission mode, and a worktree toggle" width="609">
 </p>
 
-Task names may use letters, digits, `.`, `_`, `-`. A task with `worktree`
+Task names follow herdr's agent-name rule: a lowercase letter, then
+lowercase letters, digits, `_`, `-`, at most 20 characters. A task with `worktree`
 on (the default) must point at a git repository; `add`/`edit` refuse
 otherwise. Turn it off (`--worktree false`) to run directly in any directory.
 
@@ -135,7 +136,7 @@ Every run resolves an **agent kind** (task `--agent` → `settings.json`
   <run-id>` does the same from a shell. The three newest panes per task are
   kept (`herdr_retain`); older settled ones are closed. Agents launch in
   their unattended mode; the task's `permission_mode` is ignored. The herdr
-  agent is named `<task>-<run-id>`, lower-cased and trimmed to herdr's rules.
+  agent is named `<task>-<run-id>`.
 
 Settings live in `~/.config/omaroutines/settings.json` (merged over
 `defaults/settings.json`): `execution`, `agent`, `herdr_session` (`default`
