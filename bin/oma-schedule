@@ -1,0 +1,777 @@
+#!/bin/bash
+#
+# oma-schedule - schedule unattended Claude Code runs.
+#
+# This script is the ONLY writer of tasks.json and runs.json. The sweep timer
+# and any overlay shell out to it so locking lives in exactly one place.
+# Mirrors ~/.config/omarchy/plugins/gumbledore.reminders/bin/rem: lock() +
+# apply() around jq -> mktemp -> mv, single case dispatch below.
+
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/oma-schedule"
+TASKS="$STATE_DIR/tasks.json"
+RUNS="$STATE_DIR/runs.json"
+LOCK="$STATE_DIR/.lock"
+
+CLAUDE_BIN="${OMA_SCHEDULE_CLAUDE_BIN:-claude}"
+NOTIFY_BIN="${OMA_SCHEDULE_NOTIFY_BIN:-omarchy-notification-send}"
+BACKLOG_TIMEOUT="${OMA_SCHEDULE_BACKLOG_TIMEOUT:-900}"
+CLAUDE_HOME="${OMA_SCHEDULE_CLAUDE_HOME:-$HOME/.claude}"
+RETAIN_RUNS=20
+GLYPH="󰃰"
+
+mkdir -p "$STATE_DIR"
+
+# --- store -------------------------------------------------------------------
+
+ensure_store() {
+  [[ -f $TASKS ]] || echo '{"version":1,"tasks":[]}' >"$TASKS"
+  [[ -f $RUNS ]] || echo '{"version":1,"nextRunId":1,"runs":[]}' >"$RUNS"
+}
+
+lock() {
+  exec 9>"$LOCK"
+  flock 9
+}
+
+# Release the lock taken by lock(). Safe to call even if not currently held.
+unlock() {
+  exec 9>&- 2>/dev/null || true
+}
+
+# Apply a jq filter to a store file and replace it atomically. Held under the
+# lock taken by the caller, so read-modify-write cannot interleave. First arg
+# is the target file (tasks.json or runs.json); rest is passed to jq.
+apply() {
+  local target="$1"
+  shift
+  local tmp
+  tmp=$(mktemp "$STATE_DIR/.$(basename "$target").XXXXXX")
+  if jq "$@" "$target" >"$tmp"; then
+    mv "$tmp" "$target"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# --- time --------------------------------------------------------------------
+
+# Frozen clock for deterministic tests; real clock otherwise.
+now() { echo "${OMA_SCHEDULE_NOW:-$(date +%s)}"; }
+
+when_text() { date -d "@$1" +'%a %-d %b %H:%M'; }
+
+# Validate + normalize a systemd calendar expression. Prints the normalized
+# form on stdout; on failure prints systemd-analyze's own stderr and returns 1.
+normalize_schedule() {
+  local expr="$1"
+  [[ $expr == manual ]] && {
+    echo manual
+    return 0
+  }
+  local out
+  if ! out=$(systemd-analyze calendar --iterations=1 "$expr" 2>&1); then
+    echo "$out" >&2
+    return 1
+  fi
+  grep '^Normalized form:' <<<"$out" | sed 's/^Normalized form: *//'
+}
+
+# Compute next_due epoch for a (already-validated) expression. "manual" -> "".
+# Optional --base-time=@<epoch> forwarded to systemd-analyze (ticket 05 needs
+# it for "occurrence after next_due"); when OMA_SCHEDULE_NOW is set we always
+# pass it so tests are deterministic.
+compute_next_due() {
+  local expr="$1" base="${2:-}"
+  [[ $expr == manual ]] && return 0
+  if [[ -z $base && -n ${OMA_SCHEDULE_NOW:-} ]]; then
+    base="--base-time=@$(now)"
+  fi
+  local out elapse
+  if [[ -n $base ]]; then
+    out=$(systemd-analyze calendar --iterations=1 "$base" "$expr" 2>&1)
+  else
+    out=$(systemd-analyze calendar --iterations=1 "$expr" 2>&1)
+  fi
+  elapse=$(grep '^    Next elapse:' <<<"$out" | sed 's/^    Next elapse: *//')
+  [[ -z $elapse ]] && return 1
+  date -d "$elapse" +%s
+}
+
+# --- validation ----------------------------------------------------------------
+
+validate_name() {
+  local name="$1"
+  [[ $name =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "oma-schedule: invalid task name \"$name\" (allowed: letters, digits, . _ -)" >&2
+    return 1
+  }
+}
+
+task_exists() {
+  ensure_store
+  jq -e --arg n "$1" '.tasks[] | select(.name == $n)' "$TASKS" >/dev/null
+}
+
+require_task() {
+  task_exists "$1" || {
+    echo "oma-schedule: no such task \"$1\"" >&2
+    return 1
+  }
+}
+
+# --- commands ------------------------------------------------------------------
+
+cmd_add() {
+  local name="${1:-}"
+  shift || true
+  [[ -z $name ]] && {
+    echo "oma-schedule: add requires a task name" >&2
+    return 1
+  }
+  validate_name "$name"
+
+  local prompt="" cwd="" schedule="manual" perm_mode="" worktree="true"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --prompt)
+      prompt="$2"
+      shift 2
+      ;;
+    --cwd)
+      cwd="$2"
+      shift 2
+      ;;
+    --schedule)
+      schedule="$2"
+      shift 2
+      ;;
+    --permission-mode)
+      perm_mode="$2"
+      shift 2
+      ;;
+    --worktree)
+      worktree="$2"
+      shift 2
+      ;;
+    *)
+      echo "oma-schedule: unknown option \"$1\"" >&2
+      return 1
+      ;;
+    esac
+  done
+
+  [[ -z $prompt ]] && {
+    echo "oma-schedule: --prompt is required" >&2
+    return 1
+  }
+  [[ -z $cwd ]] && {
+    echo "oma-schedule: --cwd is required" >&2
+    return 1
+  }
+  cwd=$(realpath -m "$cwd")
+  [[ -d $cwd ]] || {
+    echo "oma-schedule: --cwd \"$cwd\" is not a directory" >&2
+    return 1
+  }
+
+  ensure_store
+  if task_exists "$name"; then
+    echo "oma-schedule: task \"$name\" already exists" >&2
+    return 1
+  fi
+
+  local normalized next_due=null
+  normalized=$(normalize_schedule "$schedule") || {
+    echo "oma-schedule: invalid schedule \"$schedule\"" >&2
+    return 1
+  }
+  if [[ $normalized != manual ]]; then
+    next_due=$(compute_next_due "$normalized") || {
+      echo "oma-schedule: could not compute next occurrence for \"$schedule\"" >&2
+      return 1
+    }
+  fi
+
+
+  lock
+  apply "$TASKS" \
+    --arg name "$name" --arg prompt "$prompt" --arg cwd "$cwd" \
+    --arg schedule "$normalized" --arg perm "$perm_mode" \
+    --argjson worktree "$([[ $worktree == true ]] && echo true || echo false)" \
+    --argjson next_due "${next_due:-null}" --argjson now "$(now)" '
+    .tasks += [{
+      name: $name, prompt: $prompt, cwd: $cwd, schedule: $schedule,
+      permission_mode: (if $perm == "" then null else $perm end), worktree: $worktree, enabled: true,
+      next_due: $next_due, backlog_since: null, created: $now
+    }]
+  '
+  echo "added: $name"
+}
+
+cmd_edit() {
+  local name="${1:-}"
+  shift || true
+  [[ -z $name ]] && {
+    echo "oma-schedule: edit requires a task name" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+
+  local set_prompt=0 set_cwd=0 set_schedule=0 set_perm=0 set_worktree=0
+  local prompt="" cwd="" schedule="" perm_mode="" worktree=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --prompt)
+      prompt="$2"
+      set_prompt=1
+      shift 2
+      ;;
+    --cwd)
+      cwd="$2"
+      set_cwd=1
+      shift 2
+      ;;
+    --schedule)
+      schedule="$2"
+      set_schedule=1
+      shift 2
+      ;;
+    --permission-mode)
+      perm_mode="$2"
+      set_perm=1
+      shift 2
+      ;;
+    --worktree)
+      worktree="$2"
+      set_worktree=1
+      shift 2
+      ;;
+    *)
+      echo "oma-schedule: unknown option \"$1\"" >&2
+      return 1
+      ;;
+    esac
+  done
+
+  if ((set_cwd)); then
+    cwd=$(realpath -m "$cwd")
+    [[ -d $cwd ]] || {
+      echo "oma-schedule: --cwd \"$cwd\" is not a directory" >&2
+      return 1
+    }
+  fi
+
+  local normalized="" next_due_json="null" have_next_due=0
+  if ((set_schedule)); then
+    normalized=$(normalize_schedule "$schedule") || {
+      echo "oma-schedule: invalid schedule \"$schedule\"" >&2
+      return 1
+    }
+    if [[ $normalized != manual ]]; then
+      next_due_json=$(compute_next_due "$normalized") || {
+        echo "oma-schedule: could not compute next occurrence for \"$schedule\"" >&2
+        return 1
+      }
+    fi
+    have_next_due=1
+  fi
+
+  [[ $perm_mode == none ]] && perm_mode=""
+
+  lock
+  apply "$TASKS" \
+    --arg name "$name" \
+    --argjson set_prompt "$set_prompt" --arg prompt "$prompt" \
+    --argjson set_cwd "$set_cwd" --arg cwd "$cwd" \
+    --argjson set_schedule "$set_schedule" --arg schedule "$normalized" \
+    --argjson have_next_due "$have_next_due" --argjson next_due "$next_due_json" \
+    --argjson set_perm "$set_perm" --arg perm "$perm_mode" \
+    --argjson set_worktree "$set_worktree" \
+    --argjson worktree "$([[ $worktree == true ]] && echo true || echo false)" '
+    .tasks |= map(if .name == $name then
+        (if $set_prompt == 1 then .prompt = $prompt else . end)
+      | (if $set_cwd == 1 then .cwd = $cwd else . end)
+      | (if $set_schedule == 1 then .schedule = $schedule | .next_due = $next_due | .backlog_since = null else . end)
+      | (if $set_perm == 1 then .permission_mode = (if $perm == "" then null else $perm end) else . end)
+      | (if $set_worktree == 1 then .worktree = $worktree else . end)
+      else . end)
+  '
+  echo "edited: $name"
+}
+
+cmd_list() {
+  ensure_store
+  if [[ ${1:-} == --json ]]; then
+    # jq's strftime is UTC-only; build a local-time text map in bash so
+    # --json and the human table agree.
+    local text_map="{}" d
+    for d in $(jq -r '[.tasks[].next_due // empty] | unique | .[]' "$TASKS"); do
+      text_map=$(jq -c --argjson d "$d" --arg t "$(when_text "$d")" '. + {($d|tostring): $t}' <<<"$text_map")
+    done
+    jq -c --argjson map "$text_map" '
+      {
+        count: (.tasks | length),
+        tasks: (.tasks | map(. + {
+          next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end)
+        }))
+      }
+      | . + {
+          active: (.count > 0),
+          tooltip: (if .count == 0 then "No scheduled tasks" else "\(.count) task(s)" end)
+        }
+    ' "$TASKS"
+    return
+  fi
+
+  local any=0
+  while IFS=$'\t' read -r name schedule enabled next_due; do
+    any=1
+    local due_text="-"
+    [[ $next_due != null ]] && due_text=$(when_text "$next_due")
+    local state="on"
+    [[ $enabled == false ]] && state="off (disabled)"
+    printf '  %-20s %-24s %-8s %s\n' "$name" "$schedule" "$state" "$due_text"
+  done < <(jq -r '.tasks[] | [.name, .schedule, .enabled, (.next_due // "null")] | @tsv' "$TASKS")
+
+  ((any)) || echo "  no scheduled tasks"
+}
+
+cmd_rm() {
+  local name="${1:-}"
+  [[ -z $name ]] && {
+    echo "oma-schedule: rm requires a task name" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+  lock
+  apply "$TASKS" --arg name "$name" '.tasks |= map(select(.name != $name))'
+  echo "removed: $name"
+}
+
+cmd_set_enabled() {
+  local name="${1:-}" value="$2"
+  [[ -z $name ]] && {
+    echo "oma-schedule: task name required" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+  lock
+  apply "$TASKS" --arg name "$name" --argjson value "$value" '
+    .tasks |= map(if .name == $name then .enabled = $value else . end)
+  '
+}
+
+cmd_enable() {
+  cmd_set_enabled "${1:-}" true
+  echo "enabled: ${1:-}"
+}
+
+cmd_disable() {
+  cmd_set_enabled "${1:-}" false
+  echo "disabled: ${1:-}"
+}
+
+# --- execution (ticket 03) ----------------------------------------------------
+
+# Finalize a run-log entry (under lock) and prune that task's runs to the
+# newest RETAIN_RUNS. wt_path/wt_branch "" mean "no worktree kept" -> null.
+finalize_run() {
+  local run_id="$1" task="$2" exit_code="$3" status="$4" sid="$5" mode="$6" \
+    wt_path="$7" wt_branch="$8" run_dir="$9"
+  local end
+  end=$(now)
+  lock
+  apply "$RUNS" \
+    --argjson id "$run_id" --arg task "$task" --argjson end "$end" --arg status "$status" \
+    --argjson exit_code "$exit_code" --arg sid "$sid" --arg mode "$mode" \
+    --arg wt_path "$wt_path" --arg wt_branch "$wt_branch" --arg run_dir "$run_dir" \
+    --argjson retain "$RETAIN_RUNS" '
+    .runs |= (
+      map(if .id == $id then
+          .end = $end | .status = $status | .exit_code = $exit_code |
+          .session_id = $sid | .permission_mode = $mode |
+          .worktree_path = ($wt_path | if . == "" then null else . end) |
+          .worktree_branch = ($wt_branch | if . == "" then null else . end) |
+          .cwd = $run_dir
+        else . end)
+      | (map(select(.task != $task))) as $others
+      | (map(select(.task == $task)) | sort_by(.id) | .[-$retain:]) as $mine
+      | ($others + $mine) | sort_by(.id)
+    )
+  '
+  unlock
+}
+
+# Run a task end to end: worktree, claude -p invocation, worktree cleanup,
+# run-log entry. Shared by trigger / sweep / backlog run (trigger arg is
+# manual | scheduled | backlog-catchup). Prints "<run-id> <status>" on stdout
+# and returns 0 on success, 1 on failure -- callers that care parse that line;
+# Claude's own output never reaches the CLI's stdout.
+run_task() {
+  local name="$1" trigger="$2"
+  local task_json prompt cwd perm_override worktree_enabled
+  task_json=$(jq -c --arg n "$name" '.tasks[] | select(.name == $n)' "$TASKS")
+  prompt=$(jq -r '.prompt' <<<"$task_json")
+  cwd=$(jq -r '.cwd' <<<"$task_json")
+  perm_override=$(jq -r '.permission_mode // empty' <<<"$task_json")
+  worktree_enabled=$(jq -r '.worktree' <<<"$task_json")
+
+  mkdir -p "$STATE_DIR/logs"
+
+  local sid start run_id
+  sid=$(uuidgen)
+  start=$(now)
+  lock
+  run_id=$(jq -r '.nextRunId' "$RUNS")
+  apply "$RUNS" \
+    --argjson id "$run_id" --arg task "$name" --arg trig "$trigger" \
+    --argjson start "$start" --arg sid "$sid" '
+    .nextRunId = ($id + 1)
+    | .runs += [{
+        id: $id, task: $task, trigger: $trig, start: $start, end: null,
+        status: "running", exit_code: null, session_id: $sid,
+        permission_mode: null, worktree_path: null, worktree_branch: null, cwd: null
+      }]
+  '
+  unlock
+
+  local log_file="$STATE_DIR/logs/${run_id}.out"
+
+  local mode="$perm_override"
+  if [[ -z $mode ]]; then
+    mode=$(jq -r '.permissions.defaultMode // empty' "$CLAUDE_HOME/settings.json" 2>/dev/null) || true
+  fi
+  [[ -z $mode ]] && mode="default"
+
+  local run_dir="$cwd" wt_path="" wt_branch="" base_commit=""
+  if [[ $worktree_enabled == true ]]; then
+    local stamp
+    stamp=$(date -d "@$start" +%Y%m%d-%H%M%S)
+    wt_branch="oma-schedule/${name}-${stamp}-${run_id}"
+    wt_path="$cwd/.worktrees/${name}-${stamp}-${run_id}"
+    mkdir -p "$cwd/.worktrees"
+    # rev-parse fails on a repo with no commits; treat it like a failed worktree add
+    if ! base_commit=$(git -C "$cwd" rev-parse HEAD 2>>"$log_file") ||
+      ! git -C "$cwd" worktree add -b "$wt_branch" "$wt_path" >>"$log_file" 2>&1; then
+      echo "oma-schedule: failed to create worktree for \"$name\"" >>"$log_file"
+      finalize_run "$run_id" "$name" 1 failure "$sid" "$mode" "" "" "$cwd"
+      echo "oma-schedule: failed to create worktree for \"$name\"" >&2
+      echo "$run_id failure"
+      return 1
+    fi
+    run_dir="$wt_path"
+  fi
+
+  local exit_code
+  set +e
+  (cd "$run_dir" && "$CLAUDE_BIN" -p "$prompt" --session-id "$sid" --permission-mode "$mode" --output-format json) >"$log_file" 2>&1
+  exit_code=$?
+  set -e
+
+  if [[ $worktree_enabled == true ]]; then
+    local unchanged=0
+    if [[ -z $(git -C "$wt_path" status --porcelain) ]] &&
+      [[ $(git -C "$wt_path" rev-list --count "$base_commit"..HEAD) -eq 0 ]]; then
+      unchanged=1
+    fi
+    if ((unchanged)); then
+      git -C "$cwd" worktree remove --force "$wt_path" >/dev/null 2>&1 || true
+      git -C "$cwd" branch -D "$wt_branch" >/dev/null 2>&1 || true
+      wt_path=""
+      wt_branch=""
+    fi
+  fi
+
+  local status="success"
+  ((exit_code == 0)) || status="failure"
+  finalize_run "$run_id" "$name" "$exit_code" "$status" "$sid" "$mode" "$wt_path" "$wt_branch" "$run_dir"
+  echo "$run_id $status"
+  [[ $status == success ]]
+}
+
+cmd_trigger() {
+  local name="${1:-}"
+  [[ -z $name ]] && {
+    echo "oma-schedule: trigger requires a task name" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+
+  local out rc=0
+  out=$(run_task "$name" manual) || rc=$?
+  local run_id status
+  read -r run_id status <<<"$out"
+  local sid
+  sid=$(jq -r --argjson id "$run_id" '.runs[] | select(.id == $id) | .session_id' "$RUNS")
+  echo "run $run_id: $status (session $sid)"
+  return "$rc"
+}
+
+# Recompute + persist next_due for a task "from now" (under lock). Used after
+# every fire/backlog resolution so a task never re-fires on the next sweep.
+reschedule_from_now() {
+  local name="$1" schedule="$2" next_due
+  next_due=$(compute_next_due "$schedule") || next_due=null
+  lock
+  apply "$TASKS" --arg name "$name" --argjson next_due "${next_due:-null}" '
+    .tasks |= map(if .name == $name then .next_due = $next_due else . end)
+  '
+  unlock
+}
+
+cmd_sweep() {
+  ensure_store
+  local sweep_now
+  sweep_now=$(now)
+
+  local due
+  due=$(jq -r --argjson now "$sweep_now" '
+    .tasks[] | select(.enabled == true and .schedule != "manual" and .next_due != null and .next_due <= $now)
+    | [.name, .schedule, .next_due, (.backlog_since // "null")] | @tsv
+  ' "$TASKS")
+
+  [[ -z $due ]] && return 0
+
+  local pids=()
+  local name schedule next_due backlog_since
+  while IFS=$'\t' read -r name schedule next_due backlog_since; do
+    if [[ $backlog_since != null ]]; then
+      if ((sweep_now - backlog_since >= BACKLOG_TIMEOUT)); then
+        lock
+        apply "$TASKS" --arg name "$name" '.tasks |= map(if .name == $name then .backlog_since = null else . end)'
+        unlock
+        reschedule_from_now "$name" "$schedule"
+        echo "$name: backlog skipped (no response)"
+      fi
+      # else: pending, not yet timed out -- leave alone, no re-notify.
+      continue
+    fi
+
+    local second_occurrence
+    second_occurrence=$(compute_next_due "$schedule" "--base-time=@$next_due") || second_occurrence=""
+    if [[ -n $second_occurrence ]] && ((second_occurrence <= sweep_now)); then
+      lock
+      apply "$TASKS" --arg name "$name" --argjson now "$sweep_now" \
+        '.tasks |= map(if .name == $name then .backlog_since = $now else . end)'
+      unlock
+      "$NOTIFY_BIN" -g "$GLYPH" "Claude Schedule: missed runs of $name" \
+        "Machine was away across several scheduled runs. Click to run the backlog once, or ignore to skip (auto-skip in $((BACKLOG_TIMEOUT / 60)) min)." \
+        --exec oma-schedule backlog run "$name" >/dev/null 2>&1 || true
+      echo "$name: backlog pending (notified)"
+    else
+      reschedule_from_now "$name" "$schedule"
+      launch_run "$name" scheduled
+      echo "$name: fired"
+    fi
+  done <<<"$due"
+
+  if [[ ${OMA_SCHEDULE_SWEEP_WAIT:-} == 1 && ${#pids[@]} -gt 0 ]]; then
+    wait "${pids[@]}" 2>/dev/null || true
+  fi
+}
+
+# Detach a run from the sweep. Under the systemd oneshot service a plain `&`
+# child is killed the moment sweep exits (KillMode=control-group), so there
+# each run becomes its own transient unit; elsewhere (tests, a shell) `&` is fine.
+launch_run() {
+  local name="$1" trigger="$2"
+  if [[ -n ${INVOCATION_ID:-} && ${OMA_SCHEDULE_SWEEP_WAIT:-} != 1 ]] && command -v systemd-run >/dev/null; then
+    systemd-run --user --quiet --collect --unit "oma-schedule-run-$name-$(now)-$$" \
+      --setenv=PATH="$PATH" "$(realpath "$0")" run "$name" "$trigger" || {
+      echo "oma-schedule: systemd-run failed for \"$name\"" >&2
+    }
+  else
+    run_task "$name" "$trigger" >/dev/null 2>&1 &
+    pids+=("$!")
+  fi
+}
+
+cmd_backlog() {
+  local verb="${1:-}" name="${2:-}"
+  [[ $verb == run || $verb == skip ]] || {
+    echo "oma-schedule: backlog requires \"run\" or \"skip\" <name>" >&2
+    return 1
+  }
+  [[ -z $name ]] && {
+    echo "oma-schedule: backlog $verb requires a task name" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+
+  local schedule
+  schedule=$(jq -r --arg n "$name" '.tasks[] | select(.name == $n) | .schedule' "$TASKS")
+
+  lock
+  apply "$TASKS" --arg name "$name" '.tasks |= map(if .name == $name then .backlog_since = null else . end)'
+  unlock
+  reschedule_from_now "$name" "$schedule"
+
+  if [[ $verb == skip ]]; then
+    echo "$name: backlog skipped"
+    return 0
+  fi
+
+  local out rc=0
+  out=$(run_task "$name" backlog-catchup) || rc=$?
+  local run_id status
+  read -r run_id status <<<"$out"
+  local sid
+  sid=$(jq -r --argjson id "$run_id" '.runs[] | select(.id == $id) | .session_id' "$RUNS")
+  echo "run $run_id: $status (session $sid)"
+  return "$rc"
+}
+
+cmd_log() {
+  local name="${1:-}"
+  shift || true
+  [[ -z $name ]] && {
+    echo "oma-schedule: log requires a task name" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+
+  if [[ ${1:-} == --json ]]; then
+    jq -c --arg n "$name" '[.runs[] | select(.task == $n)] | sort_by(.id) | reverse' "$RUNS"
+    return
+  fi
+
+  local any=0
+  while IFS=$'\t' read -r id start end status trig; do
+    any=1
+    local start_text end_text
+    start_text=$(when_text "$start")
+    end_text="-"
+    [[ $end != null ]] && end_text=$(when_text "$end")
+    printf '  #%-4s %-9s %-20s %-20s %s\n' "$id" "$status" "$start_text" "$end_text" "$trig"
+  done < <(jq -r --arg n "$name" '
+    [.runs[] | select(.task == $n)] | sort_by(.id) | reverse
+    | .[] | [.id, .start, (.end // "null"), .status, .trigger] | @tsv
+  ' "$RUNS")
+
+  ((any)) || echo "  no runs yet"
+}
+
+cmd_resume() {
+  local run_id="${1:-}"
+  [[ -z $run_id ]] && {
+    echo "oma-schedule: resume requires a run id" >&2
+    return 1
+  }
+  ensure_store
+
+  local run
+  run=$(jq -c --argjson id "$run_id" '.runs[] | select(.id == $id)' "$RUNS" 2>/dev/null) || run=""
+  [[ -z $run ]] && {
+    echo "oma-schedule: no such run \"$run_id\"" >&2
+    return 1
+  }
+
+  local sid task_name rcwd
+  sid=$(jq -r '.session_id' <<<"$run")
+  task_name=$(jq -r '.task' <<<"$run")
+  rcwd=$(jq -r '.cwd' <<<"$run")
+
+  if ! compgen -G "$CLAUDE_HOME/projects/*/${sid}.jsonl" >/dev/null; then
+    echo "oma-schedule: session no longer available (run $run_id)" >&2
+    return 1
+  fi
+
+  [[ -d $rcwd ]] || rcwd=$(jq -r --arg n "$task_name" '.tasks[] | select(.name == $n) | .cwd' "$TASKS")
+  cd "$rcwd"
+  exec "$CLAUDE_BIN" --resume "$sid"
+}
+
+cmd_show_overlay() { omarchy-shell shell summon kmg.oma-claude-schedule "{}" >/dev/null 2>&1 || true; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  oma-schedule add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
+                          [--permission-mode <mode>] [--worktree true|false]
+  oma-schedule edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
+                          [--permission-mode <mode>|none] [--worktree true|false]
+  oma-schedule list [--json]           list tasks
+  oma-schedule rm <name>               remove a task
+  oma-schedule enable <name>           re-enable a disabled task
+  oma-schedule disable <name>          disable without deleting
+  oma-schedule trigger <name>          run now
+  oma-schedule sweep                   fire due tasks (called by the timer)
+  oma-schedule backlog run|skip <name> resolve a pending backlog notification
+  oma-schedule log <name> [--json]     show a task's run history
+  oma-schedule resume <run-id>         resume a past run's Claude session
+  oma-schedule show-overlay            summon the overlay
+
+Default --schedule is "manual" (never fires on its own). Schedule expressions
+are systemd calendar specs, validated via `systemd-analyze calendar`.
+EOF
+}
+
+case ${1:-} in
+add)
+  shift
+  cmd_add "$@"
+  ;;
+edit)
+  shift
+  cmd_edit "$@"
+  ;;
+list | ls)
+  shift || true
+  cmd_list "${1:-}"
+  ;;
+rm | remove)
+  shift
+  cmd_rm "$@"
+  ;;
+enable)
+  shift
+  cmd_enable "$@"
+  ;;
+disable)
+  shift
+  cmd_disable "$@"
+  ;;
+trigger)
+  shift
+  cmd_trigger "$@"
+  ;;
+run)
+  # internal: one run as a transient systemd unit (see launch_run)
+  shift
+  run_task "$1" "$2" >/dev/null
+  ;;
+sweep)
+  cmd_sweep
+  ;;
+backlog)
+  shift
+  cmd_backlog "$@"
+  ;;
+log)
+  shift
+  cmd_log "$@"
+  ;;
+resume)
+  shift
+  cmd_resume "$@"
+  ;;
+show-overlay)
+  cmd_show_overlay
+  ;;
+-h | --help | help)
+  usage
+  ;;
+*)
+  usage
+  exit 1
+  ;;
+esac

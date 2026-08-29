@@ -99,6 +99,8 @@ change.
 1. Allocate a run id + write a `running` log entry (under lock).
 2. `session_id=$(uuidgen)` — generated up front and passed as
    `--session-id`, so the log links the session even if Claude never prints.
+   (Deliberate deviation from the ticket's "captured from output": pushing
+   the id is strictly more robust and `claude --session-id` is a real flag.)
 3. If `worktree`: `git -C "$cwd" worktree add -b oma-schedule/<name>-<stamp>-<runid>
    "$cwd/.worktrees/<name>-<stamp>-<runid>"` (stamp = `%Y%m%d-%H%M%S`).
    Concurrent runs of the same task never collide because id is unique.
@@ -111,9 +113,12 @@ change.
    branch, log `worktree_path/branch: null`. Otherwise keep and record.
 7. Finalize the log entry (end, status, exit_code) and prune to 20.
 
-`trigger` runs in the foreground. `sweep` fires each due task with the same
-function (in the background, `&`, so one long run doesn't hold the minute
-sweep), recomputing `next_due` **before** launching.
+`trigger` runs in the foreground. `sweep` recomputes `next_due` **before**
+launching each due task via `launch_run`: under the systemd service
+(`$INVOCATION_ID` set) every run becomes its own transient unit
+(`systemd-run --user … oma-schedule run <name> <trigger>`) because a oneshot
+service kills plain `&` children the moment `sweep` exits; outside systemd
+(tests, a shell) it just backgrounds `run_task`.
 
 ## Sweep + backlog
 
@@ -154,6 +159,7 @@ All overridable via env, read once at CLI start:
 | `OMA_SCHEDULE_BACKLOG_TIMEOUT` | `900` | seconds before an unanswered backlog resolves to skip |
 | `OMA_SCHEDULE_NOW` | `date +%s` | frozen clock for deterministic sweep/backlog tests |
 | `OMA_SCHEDULE_CLAUDE_HOME` | `~/.claude` | where `settings.json` and `projects/` are read |
+| `OMA_SCHEDULE_SWEEP_WAIT` | unset | `1` makes `sweep` wait for the runs it launched (tests only) |
 
 Tests (`tests/test_cli.py`, pytest) drive `bin/oma-schedule` as a subprocess
 and assert on stdout, exit codes, and the JSON files. No bash internals are

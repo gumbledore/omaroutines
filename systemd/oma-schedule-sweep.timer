@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for due Claude Code tasks every minute
+
+[Timer]
+# OnCalendar (not OnUnitActiveSec) because Persistent= only applies to
+# calendar timers: after sleep/boot systemd replays the missed sweep, and
+# `oma-schedule sweep` decides between a plain catch-up fire and a backlog
+# notification.
+OnCalendar=*:*:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

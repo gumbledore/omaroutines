@@ -17,20 +17,24 @@ native trigger, run log, and UI, built on the same primitives as this machine's
 
 ## Key directories
 
-- `docs/` — `design.md` is the source of truth for scope and architecture
-- (to be filled in as the repo is built out — CLI, systemd units, QML overlay/bar
-  widget, task/log state)
+- `docs/design.md` — source of truth for scope and architecture
+- `bin/oma-schedule` — the CLI, sole writer of `~/.local/state/oma-schedule/{tasks,runs}.json`
+- `systemd/` — `oma-schedule-sweep.{timer,service}` (every-minute sweep)
+- `manifest.json`, `install.sh` — Omarchy plugin packaging (QML overlay/bar widget not yet built)
+- `tests/` — pytest suite driving the CLI as a subprocess
 
 ## How to run
 
-n/a — pre-implementation. See `docs/design.md` for the planned CLI surface.
+- Install: `./install.sh` (symlinks CLI to `~/.local/bin`, enables the timer)
+- Tests: `uv run pytest`
+- `oma-schedule --help` for the CLI surface
 
 ## Conventions
 
 - Bash + jq for the CLI/sweep, mirroring `~/.config/omarchy/plugins/gumbledore.reminders`
   (single CLI as sole writer of JSON state, flock + atomic rename, systemd `--user`
   `OnCalendar` sweep timer with `Persistent=true`).
-- A small Python (`uv run`, `croniter`) helper computes next-occurrence-from-cron;
-  everything else stays bash+jq.
+- Schedule math uses `systemd-analyze calendar` (no Python at runtime; `uv` is
+  only for the test suite).
 - QML overlay + bar widget via `omarchy-shell shell summon`, same pattern as
   `gumbledore.reminders`.

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "kmg.oma-claude-schedule",
+  "name": "Claude Schedule",
+  "version": "0.1.0",
+  "author": "Kevin Goff",
+  "license": "MIT",
+  "description": "Schedule unattended Claude Code runs with a run log and resumable sessions.",
+  "kinds": [
+    "overlay",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "ScheduleFlow.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Claude Schedule",
+    "description": "Next due task and failed-run count; click to open the task list.",
+    "category": "Status",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
