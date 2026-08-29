@@ -151,7 +151,10 @@ session; false whenever the server is unreachable), and
 `log <name> --json` adds the same plus `log_path` (the captured output file,
 or null once it is gone) to every run. Each task also carries the resolved
 `agent`, its `agent_source` (`task`|`settings`|`omarchy`|`none`) and
-`execution`; the omarchy default is read once per `list`. `list --json` reads
+`execution`; the omarchy default is read once per `list`. Top-level `settings`
+(`execution`, resolved default `agent` + `agent_source`, `herdr_session`,
+`path`) feeds the panel's mode chip and cog menu, and `agent_kinds` (accepted
+kinds found on `PATH`) its add-form "run as" choices. `list --json` reads
 `tasks.json` once so a poll racing a write never sees two versions.
 
 ## Schedule math

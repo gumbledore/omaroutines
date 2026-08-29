@@ -240,6 +240,16 @@ check_combo() {
   return 1
 }
 
+# JSON array of accepted agent kinds whose executable is on PATH (the panel's
+# add form offers these).
+installed_agent_kinds_json() {
+  local k out=""
+  for k in $AGENT_KINDS; do
+    command -v "$k" >/dev/null 2>&1 && out+="$k"$'\n'
+  done
+  printf '%s' "$out" | jq -R . | jq -sc .
+}
+
 # --- herdr ---------------------------------------------------------------------
 
 # Session name from settings. hd() mostly runs inside $(...), where a cache
@@ -733,13 +743,16 @@ cmd_list() {
     # failed/running but never as backlog/next.
     # Agent resolution is done once here (settings + omarchy default) and
     # applied per task in jq; the omarchy default is a subprocess.
-    local s_agent s_exec o_agent
+    local s_agent s_exec o_agent s_session kinds
     s_agent=$(setting agent)
     s_exec=$(setting execution)
+    s_session=$(setting herdr_session)
     o_agent=$("$DEFAULT_AGENT_BIN" 2>/dev/null) || o_agent=""
+    kinds=$(installed_agent_kinds_json)
     jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" --argjson avail "$(available_sessions_json)" \
-      --argjson panes "$(live_panes_json)" \
-      --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" '
+      --argjson panes "$(live_panes_json)" --argjson kinds "$kinds" \
+      --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" \
+      --arg s_session "$s_session" --arg s_path "$SETTINGS" '
       ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(. + {
@@ -760,6 +773,13 @@ cmd_list() {
           backlog: ($tasks | map(select(.enabled and .backlog_since != null)) | length),
           next: (if $n == null then null else {task: $n.name, next_due: $n.next_due, next_due_text: $n.next_due_text} end)
         }
+      | .settings = {
+          execution: $s_exec,
+          agent: (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end),
+          agent_source: (if $s_agent != "" then "settings" elif $o_agent != "" then "omarchy" else "none" end),
+          herdr_session: $s_session, path: $s_path
+        }
+      | .agent_kinds = $kinds
       | .badge = .failed + .backlog
       | .active = (.badge > 0)
       | .tooltip = (

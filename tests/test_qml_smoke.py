@@ -40,6 +40,9 @@ PAYLOAD = {
     "enabled": 2, "failed": 2, "running": 0, "backlog": 0, "badge": 2, "active": True,
     "next": {"task": "lint", "next_due": 1756716400, "next_due_text": "Mon 1 Sep 09:00"},
     "tooltip": "Next: lint Mon 1 Sep 09:00 · 2 failed",
+    "settings": {"execution": "herdr", "agent": "claude", "agent_source": "omarchy",
+                 "herdr_session": "oma-schedule", "path": "/tmp/settings.json"},
+    "agent_kinds": ["claude", "codex"],
 }
 
 
@@ -83,6 +86,8 @@ def test_widget_parses_contract_and_panel_compiles(tmp_path):
     assert "TASKS 3" in out
     assert "TOOLTIP Next: lint Mon 1 Sep 09:00" in out and "2 failed" in out  # console.log escapes "·"
     assert "BADGE 2" in out
+    assert "MODE herdr claude" in out
+    assert "KINDS claude,codex" in out
     # Attach/Resume contract, instantiated against the payload (not just compiled)
     assert "TASKROW watch herdr=true blocked=true canResume=false tip=Pane no longer available" in out
     assert "RUNROW watch herdr=true blocked=true canResume=false" in out

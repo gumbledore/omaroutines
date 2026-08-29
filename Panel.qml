@@ -33,6 +33,11 @@ Panel {
   readonly property string summary: hostWidget ? hostWidget.tooltip : "Claude Schedule"
   readonly property bool cliOk: hostWidget ? hostWidget.cliOk : false
   readonly property int badge: hostWidget ? hostWidget.badge : 0
+  readonly property var scheduleSettings: hostWidget ? hostWidget.scheduleSettings : ({})
+  readonly property var agentKinds: hostWidget ? hostWidget.agentKinds : []
+  readonly property string execution: String(scheduleSettings.execution || "headless")
+  readonly property string defaultAgent: scheduleSettings.agent ? String(scheduleSettings.agent) : "no agent"
+  property bool configMenuVisible: false
 
   property var expanded: ({})      // task name -> true
   property var rowErrors: ({})     // task name -> stderr of the last failed action
@@ -42,6 +47,8 @@ Panel {
   readonly property string addKey: "+add"  // rowErrors key for the add form ('+' is not a valid task name)
   readonly property string tasksPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state"))
     + "/oma-schedule/tasks.json"
+  readonly property string settingsPath: scheduleSettings.path ? String(scheduleSettings.path)
+    : (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/oma-schedule/settings.json"
 
   function setMap(name, key, value) {
     var next = {}
@@ -93,16 +100,31 @@ Panel {
     return s.indexOf("~") === 0 ? Quickshell.env("HOME") + s.substring(1) : s
   }
 
+  // "run as" choices: follow settings, force herdr, or pin an installed kind
+  // (a non-claude kind implies herdr, the only backend that runs it).
+  readonly property var agentChoices: [{ value: "default", label: "default agent" }, { value: "herdr", label: "herdr" }]
+    .concat(root.agentKinds.map(function (k) { return { value: "agent:" + k, label: k } }))
+
   function submitAdd() {
     var args = ["add", addForm.name.trim(), "--prompt", addForm.prompt, "--cwd", root.expandHome(addForm.cwd),
       "--schedule", addForm.schedule.trim() || "manual", "--worktree", addForm.worktree ? "true" : "false"]
     if (addForm.permissionMode.trim() !== "") args.push("--permission-mode", addForm.permissionMode.trim())
+    var choice = addForm.agentChoice
+    if (choice === "herdr") args.push("--execution", "herdr")
+    else if (choice.indexOf("agent:") === 0) {
+      var kind = choice.substring(6)
+      args.push("--agent", kind)
+      if (kind !== "claude") args.push("--execution", "herdr")
+    }
     root.runAction(root.addKey, args)
   }
 
-  // tasks.json is the CLI's file; hand edits skip validation and next_due
-  // recomputation, so this is for reading and quick prompt tweaks.
-  function openConfig() { Quickshell.execDetached(["omarchy-launch-config-editor", root.tasksPath]) }
+  // Both files are the CLI's; hand edits to tasks.json skip validation and
+  // next_due recomputation, settings.json is re-merged on every read.
+  function openConfig(path) {
+    root.configMenuVisible = false
+    Quickshell.execDetached(["omarchy-launch-config-editor", String(path)])
+  }
 
   // A run can take minutes and must outlive this process handle (and a shell
   // restart), so trigger is detached; the row flips to running on reload.
@@ -202,12 +224,40 @@ Panel {
         ColumnLayout {
           Layout.fillWidth: true
           spacing: 0
-          Text {
-            text: "Claude Schedule"
-            color: root.fg
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
-            font.bold: true
+          RowLayout {
+            spacing: Style.space(8)
+            Text {
+              text: "Claude Schedule"
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+            // backend + default agent every non-pinned task resolves to
+            Rectangle {
+              implicitWidth: modeText.implicitWidth + Style.space(8)
+              implicitHeight: modeText.implicitHeight + Style.space(2)
+              radius: height / 2
+              readonly property color tone: root.execution === "herdr" ? root.accent : root.muted
+              color: Util.alpha(tone, 0.18)
+              border.width: 1
+              border.color: tone
+              Text {
+                id: modeText
+                anchors.centerIn: parent
+                text: root.execution + " · " + root.defaultAgent
+                color: root.fg
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              MouseArea { id: modeArea; anchors.fill: parent; hoverEnabled: true }
+              PanelToolTip {
+                visible: modeArea.containsMouse
+                text: (root.execution === "herdr" ? "Runs are live agents in the hidden oma-schedule herdr session"
+                  : "Runs are claude -p (headless)") + "\nchange: oma-schedule settings set execution herdr|headless"
+                fontFamily: root.fontFamily
+              }
+            }
           }
           Text {
             Layout.fillWidth: true
@@ -230,9 +280,19 @@ Panel {
         }
         PanelActionButton {
           iconText: "󰒓"
-          tooltipText: "Open tasks.json"
-          onClicked: root.openConfig()
+          tooltipText: root.configMenuVisible ? "Hide" : "Open settings.json / tasks.json"
+          onClicked: root.configMenuVisible = !root.configMenuVisible
         }
+      }
+
+      // ------------------------------------------------------- config menu
+      RowLayout {
+        visible: root.configMenuVisible
+        Layout.fillWidth: true
+        spacing: Style.space(6)
+        Item { Layout.fillWidth: true }
+        Button { text: "settings.json"; iconText: "󰒓"; iconSize: Style.font.caption; fontSize: Style.font.caption; tooltipText: root.settingsPath; onClicked: root.openConfig(root.settingsPath) }
+        Button { text: "tasks.json"; iconText: "󰈙"; iconSize: Style.font.caption; fontSize: Style.font.caption; tooltipText: root.tasksPath; onClicked: root.openConfig(root.tasksPath) }
       }
 
       // ----------------------------------------------------------- add form
@@ -248,12 +308,14 @@ Panel {
         readonly property string schedule: scheduleField.text
         readonly property string permissionMode: permField.text
         property bool worktree: true
+        property string agentChoice: "default"
         readonly property bool complete: nameField.text.trim() !== "" && promptField.text.trim() !== "" && cwdField.text.trim() !== ""
         readonly property string error: root.rowErrors[root.addKey] || ""
 
         function clear() {
           nameField.text = ""; promptField.text = ""; cwdField.text = ""
           scheduleField.text = "manual"; permField.text = ""; addForm.worktree = true
+          addForm.agentChoice = "default"
         }
         function submit() { if (addForm.complete && !root.actionBusy) root.submitAdd() }
 
@@ -266,6 +328,21 @@ Panel {
           TextField { id: cwdField; Layout.fillWidth: true; placeholderText: "cwd, e.g. ~/Nucleus/rad-onc"; font.family: root.fontFamily; onAccepted: addForm.submit() }
         }
         TextField { id: promptField; Layout.fillWidth: true; placeholderText: "prompt"; font.family: root.fontFamily; onAccepted: addForm.submit() }
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          Text { text: "run as"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+          ButtonGroup {
+            options: root.agentChoices
+            value: addForm.agentChoice
+            foreground: root.fg
+            accent: root.accent
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            focusable: false
+            onChanged: function (v) { addForm.agentChoice = v }
+          }
+        }
         RowLayout {
           Layout.fillWidth: true
           spacing: Style.space(6)

@@ -210,3 +210,18 @@ def test_legacy_task_without_new_keys_still_lists_and_runs(cli, state_home, cwd_
     t = listing_task(cli, "t1")
     assert (t["agent"], t["execution"]) == ("claude", "headless")
     assert cli("trigger", "t1").returncode == 0
+
+
+def test_list_json_exposes_settings_and_installed_kinds(cli, config_home, default_agent_bin):
+    r = cli("list", "--json")
+    p = json.loads(r.stdout)
+    assert p["settings"] == {"execution": "headless", "agent": "claude", "agent_source": "omarchy",
+                             "herdr_session": "oma-schedule", "path": str(settings_file(config_home))}
+    kinds = p["agent_kinds"]
+    assert isinstance(kinds, list)
+    assert set(kinds) <= {"pi", "omp", "opencode", "claude", "codex", "grok", "gemini", "copilot"}
+
+    cli("settings", "set", "execution", "herdr")
+    cli("settings", "set", "agent", "codex")
+    s = json.loads(cli("list", "--json").stdout)["settings"]
+    assert (s["execution"], s["agent"], s["agent_source"]) == ("herdr", "codex", "settings")

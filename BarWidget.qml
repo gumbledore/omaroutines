@@ -25,6 +25,8 @@ BarWidget {
   property int enabledCount: 0
   property string tooltip: "Claude Schedule"
   property bool cliOk: false
+  property var scheduleSettings: ({})   // list --json .settings (execution, agent, path, …)
+  property var agentKinds: []           // list --json .agent_kinds (installed)
 
   // Popout contract the bar's summon/activePopout coordinator uses.
   property var panelItem: null
@@ -52,6 +54,8 @@ BarWidget {
     root.enabledCount = 0
     root.tooltip = "Claude Schedule"
     root.cliOk = false
+    root.scheduleSettings = ({})
+    root.agentKinds = []
   }
 
   function update(raw) {
@@ -62,6 +66,8 @@ BarWidget {
     root.enabledCount = Number(data.enabled || 0)
     root.tooltip = String(data.tooltip || "Claude Schedule")
     root.cliOk = Array.isArray(data.tasks)
+    root.scheduleSettings = (data.settings && typeof data.settings === "object") ? data.settings : ({})
+    root.agentKinds = Array.isArray(data.agent_kinds) ? data.agent_kinds : []
   }
 
   function injectPanel() {

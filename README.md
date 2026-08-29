@@ -29,9 +29,11 @@ under the icon; right-click refreshes. The panel lists every task with its
 enable toggle, schedule and next due, last-run outcome, and Trigger / Resume /
 Remove buttons; a pending backlog shows Run / Skip. Click a task name to expand
 its prompt and run history (Resume and Log per run). Escape, a second click,
-or clicking outside closes it. The header's `+` opens an add-task form and the
-cog opens `tasks.json` in your config editor; editing existing tasks stays on
-the CLI (`oma-schedule edit`). Runs that changed files keep their worktree
+or clicking outside closes it. A chip beside the title shows the current
+backend and default agent (`herdr · claude`). The header's `+` opens an
+add-task form whose "run as" row picks the default agent, herdr, or one of the
+installed agent kinds; the cog opens `settings.json` or `tasks.json` in your
+config editor. Editing existing tasks stays on the CLI (`oma-schedule edit`). Runs that changed files keep their worktree
 (`<cwd>/.worktrees/…`) for review; opening the panel prunes the ones whose
 branch has since been merged (`oma-schedule prune` does the same from a shell).
 
