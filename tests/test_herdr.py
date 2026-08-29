@@ -450,3 +450,4 @@ def test_pane_without_tab_id_is_never_orphaned(herdr_cli, state_home, cwd_dir, s
 
 def test_settings_rejects_zero_retain(herdr_cli):
     assert herdr_cli("settings", "set", "herdr_retain", "0").returncode != 0
+

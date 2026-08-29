@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "gumbledore.omaroutines",
   "name": "Omaroutines",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Kevin Goff",
   "license": "MIT",
   "description": "Schedule unattended agent routines (Claude Code and other Omarchy agents) with a run log and resumable sessions.",

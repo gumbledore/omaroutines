@@ -65,7 +65,7 @@ checked with data, not just compiled.
 
 ```json
 {"version":1,"tasks":[{
-  "name":"lint-my-repo",            // unique key, [A-Za-z0-9._-]+
+  "name":"lint-my-repo",            // unique key, ^[a-z][a-z0-9_-]{0,19}$ (herdr agent-name rule)
   "prompt":"...",                   // full prompt text, owned here
   "cwd":"/home/user/projects/my-repo",// absolute; must be a git repo when worktree=true
   "schedule":"Mon *-*-* 09:00:00",  // systemd calendar spec, or "manual"
