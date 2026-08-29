@@ -450,3 +450,14 @@ def test_pane_without_tab_id_is_never_orphaned(herdr_cli, state_home, cwd_dir, s
 
 def test_settings_rejects_zero_retain(herdr_cli):
     assert herdr_cli("settings", "set", "herdr_retain", "0").returncode != 0
+
+
+def test_agent_name_sanitized_for_herdr(herdr_cli, state_home, cwd_dir, stub_dir):
+    # herdr requires ^[a-z][a-z0-9_-]{0,31}$; task names allow more.
+    add_task(herdr_cli, "Test.Very-Long_Task.Name.With.Dots", cwd_dir, worktree="false")
+    assert herdr_cli("trigger", "Test.Very-Long_Task.Name.With.Dots").returncode == 0
+    names = [a["name"] for a in agents(stub_dir)]
+    assert names == ["test-very-long_task-1"]
+    run = json.loads((state_home / "omaroutines" / "runs.json").read_text())["runs"][-1]
+    assert run["status"] == "success", run
+    assert run["agent_name"] == "test-very-long_task-1"

@@ -43,6 +43,7 @@ case "$1 $2" in
     echo '{"result":{"type":"ok"}}' ;;
   "agent start")
     name=$3; shift 3; kind=""; pane=""
+    [[ $name =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || { echo '{"error":{"code":"invalid_agent_name","message":"agent name must start with a lowercase letter and contain only lowercase letters, digits, - or _ (1-32 characters)"}}' >&2; exit 1; }
     while (($#)); do case "$1" in --kind) kind=$2; shift 2 ;; --pane) pane=$2; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
     printf '%s\n' "$@" >"$STUB_DIR/start-args.$name"
     outcome=$(cat "$STUB_DIR/start-outcome" 2>/dev/null || true)
