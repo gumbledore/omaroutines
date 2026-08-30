@@ -157,18 +157,6 @@ Settings live in `~/.config/omaroutines/settings.json` (merged over
 | `~/.config/herdr/sessions/omaroutines/` | the background herdr session |
 | `<cwd>/.worktrees/<task>-<stamp>-<run-id>` | kept per-run worktrees |
 
-## Upgrading from oma-claude-schedule
-
-The project was renamed `omaroutines` (plugin id `gumbledore.omaroutines`).
-Running `./install.sh` from this repo migrates automatically: state moves from
-`~/.local/state/oma-schedule` to `~/.local/state/omaroutines`, the old
-`~/.local/bin/oma-schedule` symlink and `kmg.oma-claude-schedule` plugin
-symlink are removed, and the old `oma-schedule-sweep.{timer,service}` /
-`oma-schedule-herdr.service` units are disabled and deleted. Re-place the bar
-widget under the new id (`omarchy bar put gumbledore.omaroutines …`) and drop
-the old `kmg.oma-claude-schedule` entry from your bar config if it is still
-referenced there.
-
 ## Uninstall
 
     ./install.sh --uninstall
