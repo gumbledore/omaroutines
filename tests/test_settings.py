@@ -133,11 +133,16 @@ def test_edit_rejects_headless_with_non_claude(cli, state_home, cwd_dir):
     assert task_by_name(state_home, "t1")["execution"] == "herdr"
 
 
-def test_permission_mode_warns_under_herdr(cli, state_home, cwd_dir):
-    r = cli("add", "t1", "--prompt", "p", "--cwd", str(cwd_dir), "--execution", "herdr", "--permission-mode", "plan")
+def test_permission_mode_warns_under_herdr_for_unsupported_kinds(cli, state_home, cwd_dir):
+    r = cli("add", "t1", "--prompt", "p", "--cwd", str(cwd_dir), "--execution", "herdr",
+            "--agent", "codex", "--permission-mode", "plan")
     assert r.returncode == 0, r.stderr
     assert "ignored under herdr" in r.stderr
-    r = cli("add", "t2", "--prompt", "p", "--cwd", str(cwd_dir), "--permission-mode", "plan")
+    # claude accepts --permission-mode under herdr, so no warning
+    r = cli("add", "t2", "--prompt", "p", "--cwd", str(cwd_dir), "--execution", "herdr", "--permission-mode", "plan")
+    assert r.returncode == 0, r.stderr
+    assert "ignored" not in r.stderr
+    r = cli("add", "t3", "--prompt", "p", "--cwd", str(cwd_dir), "--permission-mode", "plan")
     assert r.returncode == 0, r.stderr
     assert "ignored" not in r.stderr
 

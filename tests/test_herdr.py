@@ -108,13 +108,30 @@ def test_workspace_reused_by_label_new_tab_per_run(herdr_cli, state_home, cwd_di
     ("pi", []),
 ])
 def test_unattended_flags_per_kind(herdr_cli, state_home, cwd_dir, stub_dir, kind, flags):
-    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent=kind, permission_mode="plan")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent=kind)
     assert herdr_cli("trigger", "t1").returncode == 0
     start = next(l for l in herdr_calls(stub_dir) if l.startswith("herdr agent start"))
     assert f"--kind {kind}" in start
     args = (stub_dir / "start-args.t1-1").read_text().split()
-    assert args == flags  # task permission_mode ignored
+    assert args == flags
     assert (stub_dir / "prompt.t1-1").read_text().strip() == "do the thing"
+
+
+@pytest.mark.parametrize("kind", ["claude", "grok"])
+def test_permission_mode_override_applies_under_herdr(herdr_cli, state_home, cwd_dir, stub_dir, kind):
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent=kind, permission_mode="acceptEdits")
+    assert herdr_cli("trigger", "t1").returncode == 0
+    args = (stub_dir / "start-args.t1-1").read_text().split()
+    assert args == ["--permission-mode", "acceptEdits"]
+    assert runs_for(state_home, "t1")[0]["permission_mode"] == "acceptEdits"
+
+
+def test_permission_mode_ignored_for_non_claude_kinds(herdr_cli, state_home, cwd_dir, stub_dir):
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex", permission_mode="acceptEdits")
+    assert herdr_cli("trigger", "t1").returncode == 0
+    args = (stub_dir / "start-args.t1-1").read_text().split()
+    assert args == ["--approve-for-me"]
+    assert runs_for(state_home, "t1")[0]["permission_mode"] is None
 
 
 def test_agent_name_collision_retries_with_suffix(herdr_cli, state_home, cwd_dir, stub_dir):
