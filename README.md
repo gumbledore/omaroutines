@@ -135,8 +135,10 @@ Every run resolves an **agent kind** (task `--agent` → `settings.json`
   button becomes **Attach** (red when blocked) and `omaroutines attach
   <run-id>` does the same from a shell. The three newest panes per task are
   kept (`herdr_retain`); older settled ones are closed. Agents launch in
-  their unattended mode; the task's `permission_mode` is ignored. The herdr
-  agent is named `<task>-<run-id>`.
+  their unattended mode; a task `permission_mode` overrides it for agents
+  that take `--permission-mode` (claude, grok) and is ignored — with a
+  warning at add/edit — for the rest. The herdr agent is named
+  `<task>-<run-id>`.
 
 Settings live in `~/.config/omaroutines/settings.json` (merged over
 `defaults/settings.json`): `execution`, `agent`, `herdr_session` (`default`

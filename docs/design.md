@@ -107,8 +107,9 @@ migration.
 }]}
 ```
 
-herdr runs have `session_id: null` (there is no claude session to resume) and
-`permission_mode: null` (ignored under herdr).
+herdr runs have `session_id: null` (there is no claude session to resume).
+`permission_mode` is null unless the task set an override that the agent kind
+honors (claude/grok, see Execution under herdr).
 
 Retention: after any run completes, that task's runs are pruned to the newest
 `RETAIN_RUNS=20`; runs that still hold a worktree **or a live herdr pane** are
@@ -177,7 +178,8 @@ not a herdr kind). `headless` supports claude only; any other combination is
 rejected when typed and, at fire time, becomes a logged `failure` with
 `reason: invalid_config` (same for "no agent set anywhere", whose message names
 `omarchy default agent <name>`). `--permission-mode` on a task that currently
-resolves to herdr is accepted with a warning — herdr runs ignore it.
+resolves to herdr is honored for kinds whose unattended flags take it
+(claude, grok); for any other kind it is accepted with a warning — ignored.
 
 ## Execution (`run_task`, shared by trigger / sweep / backlog run)
 
@@ -230,7 +232,10 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
    flags>` (table copied from `omarchy-agent`: claude `--permission-mode auto`,
    codex `--approve-for-me`, gemini `--yolo`, opencode `--auto`, copilot
    `--allow-all`, omp `--auto-approve`, grok `--permission-mode
-   bypassPermissions`, pi none). `agent_name_taken` → retry with a random
+   bypassPermissions`, pi none). For claude/grok, a task `permission_mode`
+   replaces the default `--permission-mode` value (task field only — the
+   `~/.claude/settings.json` defaultMode fallback is headless-only); other
+   kinds ignore it. `agent_name_taken` → retry with a random
    suffix. A start that fails/blocks (e.g. claude's folder-trust dialog) is
    settled from `agent list`: the pane, not the exit code, is the truth.
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is
