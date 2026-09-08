@@ -25,7 +25,7 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
   (defaults ⊕ user, `schema_version` pinned to the shipped value, invalid JSON
   → defaults + stderr warning, file never clobbered). Keys: `execution`
   (`headless`|`herdr`), `agent` (kind or null), `herdr_session`,
-  `herdr_retain`, `herdr_timeout_minutes`.
+  `herdr_retain`, `herdr_timeout_minutes`, `herdr_launch_stagger_seconds`.
 - `manifest.json` — Omarchy plugin manifest (`bar-widget` kind only; the panel
   is private to the widget, as in omagit/omaplug).
 - `BarWidget.qml` — bar icon + owner of the `list --json` poll (re-run on
@@ -272,6 +272,29 @@ launching each due task via `launch_run`: under the systemd service
 (`systemd-run --user … omaroutines run <name> <trigger>`) because a oneshot
 service kills plain `&` children the moment `sweep` exits; outside systemd
 (tests, a shell) it just backgrounds `run_task`.
+
+### herdr launch staggering
+
+Every `herdr_run` opens with `herdr_throttle`: a `flock`-guarded stamp file
+(`$STATE_DIR/.herdr-launch-stamp`) that blocks the caller until at least
+`herdr_launch_stagger_seconds` (default 5) have passed since the previous
+herdr launch began, across *all* omaroutines processes (sweep-fired tasks in
+separate transient units, concurrent manual `trigger`s from the panel,
+backlog runs). Without this, several tasks due in the same sweep tick launch
+concurrently against the shared herdr session; hitting `workspace`/`tab`/
+`agent start`/`agent prompt` all at once can make herdr's per-pane readiness
+check time out (`agent_prompt_stalled`) even though each launch is
+individually well-formed. `OMAROUTINES_HERDR_STAGGER` overrides the setting
+(tests set it to `0`).
+
+Separately, `herdr_run` treats an `agent_prompt_stalled` response from
+`agent prompt` as an explicit `failure|stalled` rather than falling back to
+reading the agent's live status: a stalled prompt leaves the agent `idle`,
+indistinguishable from "finished and back to idle", so the existing
+state-query fallback would misreport it as `success`. Other `agent
+start`/`agent prompt` errors (`agent_not_ready`, `timeout`, a vanished
+`agent_not_found`) keep going through that fallback, which already maps them
+correctly via `map_agent_state`.
 
 ## Sweep + backlog
 

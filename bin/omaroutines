@@ -13,6 +13,8 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omaroutines"
 TASKS="$STATE_DIR/tasks.json"
 RUNS="$STATE_DIR/runs.json"
 LOCK="$STATE_DIR/.lock"
+HERDR_LAUNCH_LOCK="$STATE_DIR/.herdr-launch.lock"
+HERDR_LAUNCH_STAMP="$STATE_DIR/.herdr-launch-stamp"
 
 CLAUDE_BIN="${OMAROUTINES_CLAUDE_BIN:-claude}"
 NOTIFY_BIN="${OMAROUTINES_NOTIFY_BIN:-omarchy-notification-send}"
@@ -361,6 +363,27 @@ map_agent_state() {
   esac
 }
 
+# Serialize herdr launches process-wide: block until at least
+# herdr_launch_stagger_seconds have passed since the previous launch began.
+# Concurrent scheduled/manual triggers (e.g. several tasks due in the same
+# sweep tick) otherwise hit the herdr session at the same instant and its
+# per-pane readiness check can time out (agent_prompt_stalled) under the
+# resulting contention, even though each launch is individually well-formed.
+herdr_throttle() {
+  local stagger last wait_for
+  stagger="${OMAROUTINES_HERDR_STAGGER:-$(setting herdr_launch_stagger_seconds)}"
+  [[ $stagger =~ ^[0-9]+$ ]] || stagger=5
+  ((stagger == 0)) && return 0
+  exec 8>"$HERDR_LAUNCH_LOCK"
+  flock 8
+  last=$(cat "$HERDR_LAUNCH_STAMP" 2>/dev/null) || last=0
+  [[ $last =~ ^[0-9]+$ ]] || last=0
+  wait_for=$((last + stagger - $(now)))
+  ((wait_for > 0)) && sleep "$wait_for"
+  now >"$HERDR_LAUNCH_STAMP"
+  exec 8>&-
+}
+
 # Run one task under herdr: workspace by cwd label, new unfocused tab, agent
 # start with unattended flags, prompt --wait, settle -> status/reason,
 # transcript snapshot. Sets HERDR_RESULT="status|reason", HERDR_PANE,
@@ -373,6 +396,7 @@ herdr_run() {
   HERDR_TAB=""
   HERDR_WS=""
 
+  herdr_throttle
   ensure_herdr_server || return 0
 
   local label out
@@ -415,6 +439,16 @@ herdr_run() {
   fi
 
   out=$(timeout "$((timeout_s + 60))" "$HERDR_BIN_WRAP" _herdr agent prompt "$agent" "$prompt" --wait --timeout "$((timeout_s * 1000))" 2>&1) || true
+  if [[ $(jq -r '.error.code // empty' <<<"$out" 2>/dev/null) == agent_prompt_stalled ]]; then
+    # herdr never observed the pane register the prompt at all -- the agent
+    # is left "idle" exactly as it would be after finishing normally, so
+    # falling back to a live state query (as below) is indistinguishable from
+    # success. Report it as the stall it is instead of guessing.
+    echo "omaroutines: herdr agent prompt: $out"
+    HERDR_RESULT="failure|stalled"
+    snapshot_transcript "$agent"
+    return 0
+  fi
   state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
   if [[ -z $state ]]; then
     echo "omaroutines: herdr agent prompt: $out"
@@ -1441,6 +1475,10 @@ cmd_settings() {
       ;;
     herdr_retain | herdr_timeout_minutes)
       [[ $value =~ ^[1-9][0-9]*$ ]] || { echo "omaroutines: $key must be a whole number >= 1" >&2; return 1; }
+      json=$value
+      ;;
+    herdr_launch_stagger_seconds)
+      [[ $value =~ ^[0-9]+$ ]] || { echo "omaroutines: $key must be a whole number >= 0" >&2; return 1; }
       json=$value
       ;;
     *)
