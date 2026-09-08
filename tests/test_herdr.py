@@ -181,6 +181,20 @@ def test_blocked_at_startup_is_failure_blocked(herdr_cli, state_home, cwd_dir, s
     assert not any(l.startswith("herdr agent prompt") for l in herdr_calls(stub_dir))
 
 
+def test_stalled_prompt_is_failure_not_success(herdr_cli, state_home, cwd_dir, stub_dir):
+    # agent_prompt_stalled leaves the agent "idle" -- the same status it has
+    # when genuinely done -- so this must not fall through to the live-state
+    # lookup and get reported as success (see the false-success bug it fixes).
+    (stub_dir / "prompt-outcome").write_text("stalled")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    r = herdr_cli("trigger", "t1")
+    assert r.returncode == 1
+    assert "run 1: failure" in r.stdout
+    run = runs_for(state_home, "t1")[0]
+    assert (run["status"], run["reason"]) == ("failure", "stalled")
+    assert agents(stub_dir)[0]["agent_status"] == "idle"
+
+
 def test_timeout_comes_from_task_then_settings(herdr_cli, state_home, cwd_dir, stub_dir):
     add_task(herdr_cli, "t1", cwd_dir, worktree="false")
     herdr_cli("trigger", "t1")
@@ -193,6 +207,52 @@ def test_timeout_comes_from_task_then_settings(herdr_cli, state_home, cwd_dir, s
     assert "--timeout\n120000" in (stub_dir / "prompt-args.t1-3").read_text()
     herdr_cli("trigger", "t1", env_overrides={"OMAROUTINES_HERDR_TIMEOUT": "7"})
     assert "--timeout\n7000" in (stub_dir / "prompt-args.t1-4").read_text()
+
+
+def test_herdr_launches_staggered_across_concurrent_triggers(herdr_cli, cwd_dir):
+    # Two herdr launches within herdr_launch_stagger_seconds of each other
+    # must be serialized with at least that gap -- otherwise several tasks
+    # due in the same sweep tick hit the shared herdr session at once and
+    # can trip agent_prompt_stalled (the bug this stagger works around).
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    add_task(herdr_cli, "t2", cwd_dir, worktree="false")
+    stagger = {"OMAROUTINES_HERDR_STAGGER": "2"}
+    import threading
+    import time
+
+    results = {}
+
+    def run(name):
+        r = herdr_cli("trigger", name, env_overrides=stagger)
+        results[name] = (time.monotonic(), r)
+
+    t_a = threading.Thread(target=run, args=("t1",))
+    t_b = threading.Thread(target=run, args=("t2",))
+    started = time.monotonic()
+    t_a.start()
+    t_b.start()
+    t_a.join()
+    t_b.join()
+
+    for name, (finished_at, r) in results.items():
+        assert r.returncode == 0, r.stderr
+    # the second launch to acquire the throttle must not finish before the
+    # first one plus the stagger window has elapsed
+    elapsed = max(finished_at for finished_at, _ in results.values()) - started
+    assert elapsed >= 2
+
+
+def test_herdr_stagger_disabled_by_default_in_tests(herdr_cli, cwd_dir):
+    # conftest sets OMAROUTINES_HERDR_STAGGER=0 so ordinary sequential tests
+    # (this whole file) aren't slowed down by the new throttle.
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    add_task(herdr_cli, "t2", cwd_dir, worktree="false")
+    import time
+
+    start = time.monotonic()
+    herdr_cli("trigger", "t1")
+    herdr_cli("trigger", "t2")
+    assert time.monotonic() - start < 2
 
 
 # --- transcript + log file --------------------------------------------------------

@@ -171,6 +171,7 @@ def cli(state_home, config_home, calls_dir, fake_claude_bin, claude_home, notify
         env["OMAROUTINES_NOTIFY_BIN"] = str(fake_notify_bin)
         env["FAKE_CLAUDE_CALLS_DIR"] = str(calls_dir)
         env["FAKE_NOTIFY_LOG"] = str(notify_log)
+        env["OMAROUTINES_HERDR_STAGGER"] = "0"
         env.pop("OMAROUTINES_NOW", None)
         if env_overrides:
             env.update(env_overrides)

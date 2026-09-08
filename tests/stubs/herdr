@@ -4,7 +4,7 @@
 # $STUB_LOG. Control files in $STUB_DIR:
 #   herdr-down       server not running (the systemctl stub's `start` removes it)
 #   start-outcome    blocked | taken   (agent start: blocked at startup / name taken once)
-#   prompt-outcome   done | idle | blocked | working | vanish   (default done)
+#   prompt-outcome   done | idle | blocked | working | vanish | stalled   (default done)
 #   list-fail        `workspace list` / `agent list` exit 124 (query timeout)
 set -euo pipefail
 printf 'herdr %s [HERDR_SESSION=%s]\n' "$*" "${HERDR_SESSION-<unset>}" >>"$STUB_LOG"
@@ -64,6 +64,7 @@ case "$1 $2" in
               echo '{"error":{"code":"agent_not_found","message":"agent target not found"}}' >&2; exit 1 ;;
       working) save "$agents" "map(if .name==\"$name\" then .agent_status=\"working\" else . end)"
                echo '{"error":{"code":"timeout","message":"timed out waiting for agent status"}}' >&2; exit 1 ;;
+      stalled) echo '{"error":{"code":"agent_prompt_stalled","message":"agent prompt produced no observed state change within 5000 ms; status is idle and state_change_seq remained 1"}}' >&2; exit 1 ;;
       *) save "$agents" "map(if .name==\"$name\" then .agent_status=\"$outcome\" else . end)"
          printf '{"result":{"type":"agent_prompted","agent":{"name":"%s","agent_status":"%s"}}}\n' "$name" "$outcome" ;;
     esac ;;
