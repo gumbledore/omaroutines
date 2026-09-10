@@ -141,7 +141,8 @@ def test_settings_absent_omits_flag_under_herdr(herdr_cli, state_home, cwd_dir, 
 
 
 def test_settings_ignored_for_non_claude_kinds(herdr_cli, state_home, cwd_dir, stub_dir):
-    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex", settings='{"a":1}')
+    r = add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex", settings='{"a":1}')
+    assert "settings is ignored" in r.stderr
     assert herdr_cli("trigger", "t1").returncode == 0
     assert (stub_dir / "start-args.t1-1").read_text().split() == ["--approve-for-me"]
 

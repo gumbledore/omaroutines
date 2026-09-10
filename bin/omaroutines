@@ -146,7 +146,7 @@ validate_perm_mode() {
 # Task `settings`: a JSON literal or a path to a settings file, passed to
 # claude as --settings. Claude accepts both; we only reject obvious mistakes.
 validate_settings() {
-  local v="$1"
+  local v="${1#"${1%%[![:space:]]*}"}"
   if [[ $v == \{* ]]; then
     jq -e . <<<"$v" >/dev/null 2>&1 || {
       echo "omaroutines: --settings is not valid JSON" >&2
@@ -541,7 +541,7 @@ snapshot_transcript() {
 # permission mode is set on a task that resolves to a herdr agent kind
 # whose unattended flags cannot carry it (ignored there).
 validate_agent_fields() {
-  local agent="$1" execution="$2" herdr_timeout="$3" perm_mode="$4"
+  local agent="$1" execution="$2" herdr_timeout="$3" perm_mode="$4" settings="${5:-}"
   [[ -z $agent ]] || validate_agent "$agent"
   [[ -z $execution ]] || validate_execution "$execution"
   [[ -z $herdr_timeout || $herdr_timeout =~ ^[0-9]+$ ]] || {
@@ -554,6 +554,8 @@ validate_agent_fields() {
   check_combo "$kind" "$source" "$exec_resolved"
   [[ -n $perm_mode && $exec_resolved == herdr ]] && ! perm_override_kind "$kind" &&
     echo "omaroutines: warning: permission mode is ignored under herdr for agent \"${kind:-unset}\"" >&2
+  [[ -n $settings && $exec_resolved == herdr && $kind != claude ]] &&
+    echo "omaroutines: warning: settings is ignored under herdr for agent \"${kind:-unset}\"" >&2
   return 0
 }
 
@@ -654,7 +656,7 @@ cmd_add() {
   fi
   [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
   [[ -z $settings ]] || validate_settings "$settings"
-  validate_agent_fields "$agent" "$execution" "$herdr_timeout" "$perm_mode"
+  validate_agent_fields "$agent" "$execution" "$herdr_timeout" "$perm_mode" "$settings"
 
   lock
   apply "$TASKS" \
@@ -782,15 +784,17 @@ cmd_edit() {
   [[ $execution == none ]] && execution=""
   [[ $herdr_timeout == none ]] && herdr_timeout=""
   # Combo check on the task as it will be after this edit.
-  local cur eff_agent eff_exec eff_perm
+  local cur eff_agent eff_exec eff_perm eff_settings
   cur=$(jq -c --arg n "$name" '.tasks[] | select(.name == $n)' "$TASKS")
   eff_agent=$(jq -r '.agent // empty' <<<"$cur")
   eff_exec=$(jq -r '.execution // empty' <<<"$cur")
   eff_perm=$(jq -r '.permission_mode // empty' <<<"$cur")
+  eff_settings=$(jq -r '.settings // empty' <<<"$cur")
   ((set_agent)) && eff_agent="$agent"
   ((set_execution)) && eff_exec="$execution"
   ((set_perm)) && eff_perm="$perm_mode"
-  validate_agent_fields "$eff_agent" "$eff_exec" "$herdr_timeout" "$eff_perm"
+  ((set_settings)) && eff_settings="$settings"
+  validate_agent_fields "$eff_agent" "$eff_exec" "$herdr_timeout" "$eff_perm" "$eff_settings"
 
   lock
   apply "$TASKS" \

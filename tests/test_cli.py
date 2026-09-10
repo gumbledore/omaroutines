@@ -410,6 +410,11 @@ def test_add_settings_literal_and_edit_none_clears(cli, state_home, cwd_dir):
     assert task_by_name(state_home, "t1")["settings"] is None
 
 
+def test_settings_literal_tolerates_leading_whitespace(cli, state_home, cwd_dir):
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--settings", "  " + SETTINGS_LITERAL)
+    assert r.returncode == 0, r.stderr
+
+
 def test_add_settings_defaults_to_null(cli, state_home, cwd_dir):
     cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir))
     assert task_by_name(state_home, "t1")["settings"] is None
