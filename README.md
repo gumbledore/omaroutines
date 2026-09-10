@@ -94,9 +94,11 @@ opening the panel prunes the ones whose branch has since been merged
     omaroutines add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                             [--permission-mode <mode>] [--worktree true|false]
                             [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
+                            [--settings <json|file>]
     omaroutines edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                             [--permission-mode <mode>|none] [--worktree true|false]
                             [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
+                            [--settings <json|file>|none]
     omaroutines settings [get <key> | set <key> <value>]
     omaroutines list [--json]           list tasks
     omaroutines rm <name>               remove a task
@@ -139,6 +141,14 @@ Every run resolves an **agent kind** (task `--agent` → `settings.json`
   that take `--permission-mode` (claude, grok) and is ignored — with a
   warning at add/edit — for the rest. The herdr agent is named
   `<task>-<run-id>`.
+
+A task's optional `settings` (a JSON object literal or a path to a settings
+file) is forwarded verbatim as `claude --settings` on both backends, so one
+routine can tighten its policy without touching `~/.claude` or the repo.
+Claude only; ignored for other kinds. Example, refusing the unsandboxed
+retry for a single task:
+
+    omaroutines edit nightly-report --settings '{"sandbox":{"allowUnsandboxedCommands":false}}'
 
 Settings live in `~/.config/omaroutines/settings.json` (merged over
 `defaults/settings.json`): `execution`, `agent`, `herdr_session` (`default`

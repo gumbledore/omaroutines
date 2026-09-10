@@ -393,3 +393,46 @@ def test_edit_worktree_requires_git_repo(cli, state_home, cwd_dir, tmp_path):
     # both at once, consistent, is fine
     r = cli("edit", "t2", "--cwd", str(plain), "--worktree", "false")
     assert r.returncode == 0, r.stderr
+
+
+# --- task `settings` (claude --settings pass-through) --------------------------
+
+SETTINGS_LITERAL = '{"sandbox":{"allowUnsandboxedCommands":false}}'
+
+
+def test_add_settings_literal_and_edit_none_clears(cli, state_home, cwd_dir):
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--settings", SETTINGS_LITERAL)
+    assert r.returncode == 0, r.stderr
+    assert task_by_name(state_home, "t1")["settings"] == SETTINGS_LITERAL
+
+    r = cli("edit", "t1", "--settings", "none")
+    assert r.returncode == 0, r.stderr
+    assert task_by_name(state_home, "t1")["settings"] is None
+
+
+def test_add_settings_defaults_to_null(cli, state_home, cwd_dir):
+    cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir))
+    assert task_by_name(state_home, "t1")["settings"] is None
+
+
+def test_settings_accepts_existing_file_path(cli, state_home, cwd_dir, tmp_path):
+    f = tmp_path / "policy.json"
+    f.write_text(SETTINGS_LITERAL)
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--settings", str(f))
+    assert r.returncode == 0, r.stderr
+    assert task_by_name(state_home, "t1")["settings"] == str(f)
+
+
+def test_settings_rejects_malformed_json_and_missing_file(cli, state_home, cwd_dir, tmp_path):
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--settings", "{not json")
+    assert r.returncode != 0 and "settings" in r.stderr
+    assert task_by_name(state_home, "t1") is None
+
+    r = cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir), "--settings", str(tmp_path / "nope.json"))
+    assert r.returncode != 0 and "settings" in r.stderr
+    assert task_by_name(state_home, "t1") is None
+
+    cli("add", "t1", "--prompt", "hi", "--cwd", str(cwd_dir))
+    r = cli("edit", "t1", "--settings", "{not json")
+    assert r.returncode != 0
+    assert task_by_name(state_home, "t1")["settings"] is None
