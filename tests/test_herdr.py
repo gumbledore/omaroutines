@@ -126,6 +126,27 @@ def test_permission_mode_override_applies_under_herdr(herdr_cli, state_home, cwd
     assert runs_for(state_home, "t1")[0]["permission_mode"] == "acceptEdits"
 
 
+def test_settings_forwarded_to_herdr_claude(herdr_cli, state_home, cwd_dir, stub_dir):
+    literal = '{"sandbox":{"allowUnsandboxedCommands":false}}'
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="claude", settings=literal)
+    assert herdr_cli("trigger", "t1").returncode == 0
+    args = (stub_dir / "start-args.t1-1").read_text().splitlines()
+    assert args == ["--permission-mode", "auto", "--settings", literal]
+
+
+def test_settings_absent_omits_flag_under_herdr(herdr_cli, state_home, cwd_dir, stub_dir):
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="claude")
+    assert herdr_cli("trigger", "t1").returncode == 0
+    assert "--settings" not in (stub_dir / "start-args.t1-1").read_text().split()
+
+
+def test_settings_ignored_for_non_claude_kinds(herdr_cli, state_home, cwd_dir, stub_dir):
+    r = add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex", settings='{"a":1}')
+    assert "settings is ignored" in r.stderr
+    assert herdr_cli("trigger", "t1").returncode == 0
+    assert (stub_dir / "start-args.t1-1").read_text().split() == ["--approve-for-me"]
+
+
 def test_permission_mode_ignored_for_non_claude_kinds(herdr_cli, state_home, cwd_dir, stub_dir):
     add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex", permission_mode="acceptEdits")
     assert herdr_cli("trigger", "t1").returncode == 0

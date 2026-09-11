@@ -77,7 +77,8 @@ checked with data, not just compiled.
   "created":1756400000,
   "agent":null,                     // omarchy agent kind; null = settings.agent, then omarchy-default-agent
   "execution":null,                 // headless | herdr; null = settings.execution
-  "herdr_timeout":null              // minutes; null = settings.herdr_timeout_minutes
+  "herdr_timeout":null,             // minutes; null = settings.herdr_timeout_minutes
+  "settings":null                   // JSON literal or file path -> `claude --settings`; claude kind only
 }]}
 ```
 
@@ -235,7 +236,8 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
    bypassPermissions`, pi none). For claude/grok, a task `permission_mode`
    replaces the default `--permission-mode` value (task field only — the
    `~/.claude/settings.json` defaultMode fallback is headless-only); other
-   kinds ignore it. `agent_name_taken` → retry with a random
+   kinds ignore it. A task `settings` value is appended as `--settings <v>`
+   (claude only; same on the headless path). `agent_name_taken` → retry with a random
    suffix. A start that fails/blocks (e.g. claude's folder-trust dialog) is
    settled from `agent list`: the pane, not the exit code, is the truth.
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is

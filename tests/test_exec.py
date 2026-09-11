@@ -304,3 +304,23 @@ def test_log_files_pruned_with_runs(cli, state_home, git_repo):
     logs = state_home / "omaroutines" / "logs"
     on_disk = {int(p.stem) for p in logs.glob("*.out")}
     assert on_disk == ids
+
+
+# --- task `settings` -> claude --settings ------------------------------------
+
+SETTINGS_LITERAL = '{"sandbox":{"allowUnsandboxedCommands":false}}'
+
+
+def test_settings_forwarded_to_headless_claude(cli, state_home, git_repo, calls_dir):
+    add_task(cli, "t1", git_repo, settings=SETTINGS_LITERAL)
+    cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    argv = _argv_for(calls_dir, run["session_id"])
+    assert argv[argv.index("--settings") + 1] == SETTINGS_LITERAL
+
+
+def test_settings_absent_omits_flag(cli, state_home, git_repo, calls_dir):
+    add_task(cli, "t1", git_repo)
+    cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    assert "--settings" not in _argv_for(calls_dir, run["session_id"])
