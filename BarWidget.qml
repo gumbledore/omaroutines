@@ -27,6 +27,7 @@ BarWidget {
   property bool cliOk: false
   property var scheduleSettings: ({})   // list --json .settings (execution, agent, path, …)
   property var agentKinds: []           // list --json .agent_kinds (installed)
+  property var modelChoices: []         // list --json .model_choices (claude aliases)
 
   // Popout contract the bar's summon/activePopout coordinator uses.
   property var panelItem: null
@@ -56,6 +57,7 @@ BarWidget {
     root.cliOk = false
     root.scheduleSettings = ({})
     root.agentKinds = []
+    root.modelChoices = []
   }
 
   function update(raw) {
@@ -68,6 +70,7 @@ BarWidget {
     root.cliOk = Array.isArray(data.tasks)
     root.scheduleSettings = (data.settings && typeof data.settings === "object") ? data.settings : ({})
     root.agentKinds = Array.isArray(data.agent_kinds) ? data.agent_kinds : []
+    root.modelChoices = Array.isArray(data.model_choices) ? data.model_choices : []
   }
 
   function injectPanel() {

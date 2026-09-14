@@ -94,6 +94,7 @@ ShellRoot {
       console.log("BADGE " + w.badge)
       console.log("MODE " + w.scheduleSettings.execution + " " + w.scheduleSettings.agent)
       console.log("KINDS " + w.agentKinds.join(","))
+      console.log("MODEL " + w.scheduleSettings.model + " " + w.modelChoices.join(","))
       var ok = true
       var files = ["Panel.qml", "panel/TaskRow.qml", "panel/RunRow.qml"]
       for (var i = 0; i < files.length; i++) ok = root.compileOk(files[i]) && ok

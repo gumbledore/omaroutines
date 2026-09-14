@@ -81,7 +81,7 @@ second click, or clicking outside closes it.
 The chip beside the title shows the current backend and default agent
 (`herdr · claude`). The header's **+** opens the add-task form, whose "run in /
 as" row picks the backend and then the agent, pinning `--execution`/`--agent`
-only where they differ from the defaults; the cog opens `settings.json` or
+only where they differ from the defaults; the cog picks the default model and opens `settings.json` or
 `tasks.json` in your editor. Editing existing tasks is CLI-only
 (`omaroutines edit`).
 
@@ -94,11 +94,11 @@ opening the panel prunes the ones whose branch has since been merged
     omaroutines add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                             [--permission-mode <mode>] [--worktree true|false]
                             [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
-                            [--settings <json|file>]
+                            [--settings <json|file>] [--model <alias|id>]
     omaroutines edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                             [--permission-mode <mode>|none] [--worktree true|false]
                             [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
-                            [--settings <json|file>|none]
+                            [--settings <json|file>|none] [--model <alias|id>|none]
     omaroutines settings [get <key> | set <key> <value>]
     omaroutines list [--json]           list tasks
     omaroutines rm <name>               remove a task
@@ -150,9 +150,18 @@ retry for a single task:
 
     omaroutines edit nightly-report --settings '{"sandbox":{"allowUnsandboxedCommands":false}}'
 
+Each run also resolves a **model** (task `--model` → `settings.json` `model`
+→ claude's own default), passed as `claude --model` on both backends. Claude
+only; ignored for other kinds. Use an alias (`sonnet`, `opus`, `fable`,
+`haiku`) or a full model id. The panel's cog menu sets the default with one
+click and the add form offers the same chips per task.
+
+    omaroutines settings set model sonnet      # every non-pinned task -> sonnet
+    omaroutines edit paper-watch --model opus  # this one orchestrates: opus
+
 Settings live in `~/.config/omaroutines/settings.json` (merged over
-`defaults/settings.json`): `execution`, `agent`, `herdr_session` (`default`
-= your foreground herdr), `herdr_retain`, `herdr_timeout_minutes`.
+`defaults/settings.json`): `execution`, `agent`, `model`, `herdr_session`
+(`default` = your foreground herdr), `herdr_retain`, `herdr_timeout_minutes`.
 
     omaroutines settings                       # show
     omaroutines settings set execution herdr   # every non-pinned task -> herdr

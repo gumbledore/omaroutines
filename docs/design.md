@@ -24,8 +24,9 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
   `${XDG_CONFIG_HOME:-~/.config}/omaroutines/settings.json` on every read
   (defaults ⊕ user, `schema_version` pinned to the shipped value, invalid JSON
   → defaults + stderr warning, file never clobbered). Keys: `execution`
-  (`headless`|`herdr`), `agent` (kind or null), `herdr_session`,
-  `herdr_retain`, `herdr_timeout_minutes`, `herdr_launch_stagger_seconds`.
+  (`headless`|`herdr`), `agent` (kind or null), `model` (claude model alias
+  or id, or null), `herdr_session`, `herdr_retain`, `herdr_timeout_minutes`,
+  `herdr_launch_stagger_seconds`.
 - `manifest.json` — Omarchy plugin manifest (`bar-widget` kind only; the panel
   is private to the widget, as in omagit/omaplug).
 - `BarWidget.qml` — bar icon + owner of the `list --json` poll (re-run on
@@ -78,7 +79,8 @@ checked with data, not just compiled.
   "agent":null,                     // omarchy agent kind; null = settings.agent, then omarchy-default-agent
   "execution":null,                 // headless | herdr; null = settings.execution
   "herdr_timeout":null,             // minutes; null = settings.herdr_timeout_minutes
-  "settings":null                   // JSON literal or file path -> `claude --settings`; claude kind only
+  "settings":null,                  // JSON literal or file path -> `claude --settings`; claude kind only
+  "model":null                      // claude model alias/id -> `claude --model`; null = settings.model, then claude's default
 }]}
 ```
 
@@ -98,6 +100,7 @@ migration.
   "exit_code":0,
   "session_id":"uuid",
   "permission_mode":"auto",
+  "model":"sonnet",                 // what reached `claude --model`; null if none or non-claude
   "worktree_path":"/…/.worktrees/lint-my-repo-20260828-1",  // null if none or removed
   "worktree_branch":"omaroutines/lint-my-repo-…",           // null if none or removed
   "cwd":"/…",                       // directory the run actually executed in
@@ -122,9 +125,11 @@ exempt (see Worktree pruning / Pane retention) so they never become orphans.
 omaroutines add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                         [--permission-mode <mode>] [--worktree true|false]
                         [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
+                        [--settings <json|file>] [--model <alias|id>]
 omaroutines edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                         [--permission-mode <mode>|none] [--worktree true|false]
                         [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
+                        [--settings <json|file>|none] [--model <alias|id>|none]
 omaroutines settings [get <key> | set <key> <value>]
 omaroutines list [--json]
 omaroutines rm <name>
@@ -152,11 +157,13 @@ carries `session_available` (the session transcript still exists), `backend`,
 session; false whenever the server is unreachable), and
 `log <name> --json` adds the same plus `log_path` (the captured output file,
 or null once it is gone) to every run. Each task also carries the resolved
-`agent`, its `agent_source` (`task`|`settings`|`omarchy`|`none`) and
-`execution`; the omarchy default is read once per `list`. Top-level `settings`
-(`execution`, resolved default `agent` + `agent_source`, `herdr_session`,
-`path`) feeds the panel's mode chip and cog menu, and `agent_kinds` (accepted
-kinds found on `PATH`) its add-form "run as" choices. `list --json` reads
+`agent`, its `agent_source` (`task`|`settings`|`omarchy`|`none`),
+`execution`, and the resolved `model` + `model_source` (`task`|`settings`|
+`none`); the omarchy default is read once per `list`. Top-level `settings`
+(`execution`, resolved default `agent` + `agent_source`, `model`,
+`herdr_session`, `path`) feeds the panel's mode chip and cog menu,
+`agent_kinds` (accepted kinds found on `PATH`) its add-form "run as" choices,
+and `model_choices` (the claude aliases) its model chips. `list --json` reads
 `tasks.json` once so a poll racing a write never sees two versions.
 
 ## Schedule math
@@ -181,6 +188,15 @@ rejected when typed and, at fire time, becomes a logged `failure` with
 `omarchy default agent <name>`). `--permission-mode` on a task that currently
 resolves to herdr is honored for kinds whose unattended flags take it
 (claude, grok); for any other kind it is accepted with a warning — ignored.
+
+Model = task `model` → settings `model` → none (claude's own default, which
+is whatever `claude` would pick unprompted — the reason this exists). It is
+passed as `claude --model <value>` on both backends, claude kind only (other
+kinds: accepted with a warning, ignored). Values are validated only for
+shape (`^[A-Za-z0-9][A-Za-z0-9._:-]*$`): an alias (`sonnet`, `opus`,
+`fable`, `haiku`) or a full model id; claude rejects unknown ones at launch.
+The run record carries the `model` that actually applied (null when none
+or non-claude).
 
 ## Execution (`run_task`, shared by trigger / sweep / backlog run)
 
@@ -341,8 +357,12 @@ attach <session>` (bare `herdr` for `"default"`). `--terminal` detaches via
 command. In the panel one button serves both: Resume for headless runs,
 Attach for herdr runs, disabled when `session_available` / `pane_available`
 is false, tinted urgent when `reason == blocked`; the failure reason is shown
-next to the status, and the expanded task line shows `<agent> · <execution>`.
-Settings and agent pinning have no panel UI.
+next to the status, and the expanded task line shows `<agent> · <execution>
+[· <model>]`. The cog menu carries the one settings control that has a panel
+UI: default-model chips (`claude default` + `model_choices` from `list
+--json`) that run `settings set model <alias>|none`; the add form has the
+same chips per task (`--model`, omitted for "default"). Backend and agent
+pinning stay CLI-only.
 
 ## Worktree pruning
 

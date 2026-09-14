@@ -324,3 +324,30 @@ def test_settings_absent_omits_flag(cli, state_home, git_repo, calls_dir):
     cli("trigger", "t1")
     run = runs_for(state_home, "t1")[0]
     assert "--settings" not in _argv_for(calls_dir, run["session_id"])
+
+
+def test_model_forwarded_to_headless_claude(cli, state_home, git_repo, calls_dir):
+    add_task(cli, "t1", git_repo, model="opus")
+    cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    argv = _argv_for(calls_dir, run["session_id"])
+    assert argv[argv.index("--model") + 1] == "opus"
+    assert run["model"] == "opus"
+
+
+def test_model_from_settings_when_task_unset(cli, state_home, git_repo, calls_dir):
+    add_task(cli, "t1", git_repo)
+    cli("settings", "set", "model", "sonnet")
+    cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    argv = _argv_for(calls_dir, run["session_id"])
+    assert argv[argv.index("--model") + 1] == "sonnet"
+    assert run["model"] == "sonnet"
+
+
+def test_model_absent_omits_flag(cli, state_home, git_repo, calls_dir):
+    add_task(cli, "t1", git_repo)
+    cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    assert "--model" not in _argv_for(calls_dir, run["session_id"])
+    assert run["model"] is None

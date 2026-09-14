@@ -21,14 +21,14 @@ PAYLOAD = {
         {"name": "watch", "prompt": "watch", "cwd": "/tmp", "schedule": "manual",
          "permission_mode": None, "worktree": False, "enabled": True, "next_due": None,
          "backlog_since": None, "created": 1756400000, "next_due_text": "-",
-         "agent": "codex", "agent_source": "settings", "execution": "herdr",
+         "agent": "codex", "agent_source": "settings", "execution": "herdr", "model": None, "model_source": "none",
          "last_run": {"id": 5, "status": "failure", "trigger": "manual", "start": 1756700000,
                       "end": 1756700100, "session_available": False, "backend": "herdr", "reason": "blocked",
                       "pane_id": "w1:p2", "pane_available": False}},
         {"name": "lint", "prompt": "lint", "cwd": "/tmp", "schedule": "Mon *-*-* 09:00:00",
          "permission_mode": None, "worktree": True, "enabled": True, "next_due": 1756716400,
          "backlog_since": None, "created": 1756400000, "next_due_text": "Mon 1 Sep 09:00",
-         "agent": "claude", "agent_source": "omarchy", "execution": "headless",
+         "agent": "claude", "agent_source": "omarchy", "execution": "headless", "model": "opus", "model_source": "task",
          "last_run": {"id": 3, "status": "failure", "trigger": "scheduled", "start": 1756700000,
                       "end": 1756700100, "session_available": True, "backend": "headless", "reason": None,
                       "pane_id": None, "pane_available": False}},
@@ -40,9 +40,10 @@ PAYLOAD = {
     "enabled": 2, "failed": 2, "running": 0, "backlog": 0, "badge": 2, "active": True,
     "next": {"task": "lint", "next_due": 1756716400, "next_due_text": "Mon 1 Sep 09:00"},
     "tooltip": "Next: lint Mon 1 Sep 09:00 · 2 failed",
-    "settings": {"execution": "herdr", "agent": "claude", "agent_source": "omarchy",
+    "settings": {"execution": "herdr", "agent": "claude", "agent_source": "omarchy", "model": "sonnet",
                  "herdr_session": "omaroutines", "path": "/tmp/settings.json"},
     "agent_kinds": ["claude", "codex"],
+    "model_choices": ["sonnet", "opus", "fable", "haiku"],
 }
 
 
@@ -88,6 +89,7 @@ def test_widget_parses_contract_and_panel_compiles(tmp_path):
     assert "BADGE 2" in out
     assert "MODE herdr claude" in out
     assert "KINDS claude,codex" in out
+    assert "MODEL sonnet sonnet,opus,fable,haiku" in out
     # Attach/Resume contract, instantiated against the payload (not just compiled)
     assert "TASKROW watch herdr=true blocked=true canResume=false tip=Pane no longer available" in out
     assert "RUNROW watch herdr=true blocked=true canResume=false" in out

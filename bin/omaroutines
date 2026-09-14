@@ -40,6 +40,9 @@ EXECUTIONS="headless herdr"
 # Claude Code --permission-mode values we will pass through. Anything else is
 # rejected at add/edit and again at run time (settings.json fallback included).
 PERM_MODES="default acceptEdits plan dontAsk bypassPermissions auto"
+# Claude model aliases the panel offers; `--model` accepts any token claude
+# would (alias or full id), see validate_model.
+MODEL_CHOICES="sonnet opus fable haiku"
 GLYPH="󰃰"
 
 mkdir -p "$STATE_DIR"
@@ -143,6 +146,14 @@ validate_perm_mode() {
   }
 }
 
+# Model: passed verbatim as `claude --model`; alias or full model id.
+validate_model() {
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || {
+    echo "omaroutines: invalid model \"$1\" (an alias like sonnet/opus/fable or a full model id)" >&2
+    return 1
+  }
+}
+
 # Task `settings`: a JSON literal or a path to a settings file, passed to
 # claude as --settings. Claude accepts both; we only reject obvious mistakes.
 validate_settings() {
@@ -242,6 +253,16 @@ resolve_agent() {
   else
     echo "|none"
   fi
+}
+
+# Model: task override -> settings -> "" (claude picks its own default).
+# Prints "<model>|<source>", source task|settings|none.
+resolve_model() {
+  local task_model="$1" m
+  [[ -n $task_model ]] && { echo "$task_model|task"; return; }
+  m=$(setting model)
+  [[ -n $m ]] && { echo "$m|settings"; return; }
+  echo "|none"
 }
 
 resolve_execution() {
@@ -404,7 +425,7 @@ herdr_throttle() {
 # transcript snapshot. Sets HERDR_RESULT="status|reason", HERDR_PANE,
 # HERDR_TAB, HERDR_WS. Everything it prints goes to the run log.
 herdr_run() {
-  local name="$1" run_id="$2" kind="$3" prompt="$4" cwd="$5" run_dir="$6" timeout_s="$7" perm_mode="${8:-}" settings="${9:-}"
+  local name="$1" run_id="$2" kind="$3" prompt="$4" cwd="$5" run_dir="$6" timeout_s="$7" perm_mode="${8:-}" settings="${9:-}" model="${10:-}"
   HERDR_RESULT="failure|exited"
   HERDR_AGENT=""
   HERDR_PANE=""
@@ -436,6 +457,7 @@ herdr_run() {
   flags=($(unattended_flags "$kind" "$perm_mode"))
   # Appended unsplit: a JSON literal may contain spaces. Claude only.
   [[ -n $settings && $kind == claude ]] && flags+=(--settings "$settings")
+  [[ -n $model && $kind == claude ]] && flags+=(--model "$model")
   out=$(hdm agent start "$agent" --kind "$kind" --pane "$HERDR_PANE" --timeout "$HERDR_AGENT_START_MS" -- "${flags[@]}" 2>&1) || {
     if [[ $out == *agent_name_taken* ]]; then
       agent="${agent}-$RANDOM"
@@ -541,7 +563,7 @@ snapshot_transcript() {
 # permission mode is set on a task that resolves to a herdr agent kind
 # whose unattended flags cannot carry it (ignored there).
 validate_agent_fields() {
-  local agent="$1" execution="$2" herdr_timeout="$3" perm_mode="$4" settings="${5:-}"
+  local agent="$1" execution="$2" herdr_timeout="$3" perm_mode="$4" settings="${5:-}" model="${6:-}"
   [[ -z $agent ]] || validate_agent "$agent"
   [[ -z $execution ]] || validate_execution "$execution"
   [[ -z $herdr_timeout || $herdr_timeout =~ ^[0-9]+$ ]] || {
@@ -556,6 +578,8 @@ validate_agent_fields() {
     echo "omaroutines: warning: permission mode is ignored under herdr for agent \"${kind:-unset}\"" >&2
   [[ -n $settings && $exec_resolved == herdr && $kind != claude ]] &&
     echo "omaroutines: warning: settings is ignored under herdr for agent \"${kind:-unset}\"" >&2
+  [[ -n $model && $exec_resolved == herdr && $kind != claude ]] &&
+    echo "omaroutines: warning: model is ignored under herdr for agent \"${kind:-unset}\"" >&2
   return 0
 }
 
@@ -576,11 +600,15 @@ cmd_add() {
   }
   validate_name "$name"
 
-  local prompt="" cwd="" schedule="manual" perm_mode="" worktree="true" agent="" execution="" herdr_timeout="" settings=""
+  local prompt="" cwd="" schedule="manual" perm_mode="" worktree="true" agent="" execution="" herdr_timeout="" settings="" model=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --prompt)
       prompt="$2"
+      shift 2
+      ;;
+    --model)
+      model="$2"
       shift 2
       ;;
     --settings)
@@ -656,12 +684,13 @@ cmd_add() {
   fi
   [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
   [[ -z $settings ]] || validate_settings "$settings"
-  validate_agent_fields "$agent" "$execution" "$herdr_timeout" "$perm_mode" "$settings"
+  [[ -z $model ]] || validate_model "$model"
+  validate_agent_fields "$agent" "$execution" "$herdr_timeout" "$perm_mode" "$settings" "$model"
 
   lock
   apply "$TASKS" \
     --arg name "$name" --arg prompt "$prompt" --arg cwd "$cwd" \
-    --arg schedule "$normalized" --arg perm "$perm_mode" --arg settings "$settings" \
+    --arg schedule "$normalized" --arg perm "$perm_mode" --arg settings "$settings" --arg model "$model" \
     --argjson worktree "$([[ $worktree == true ]] && echo true || echo false)" \
     --argjson next_due "${next_due:-null}" --argjson now "$(now)" \
     --arg agent "$agent" --arg execution "$execution" --argjson herdr_timeout "${herdr_timeout:-null}" '
@@ -672,7 +701,8 @@ cmd_add() {
       agent: (if $agent == "" then null else $agent end),
       execution: (if $execution == "" then null else $execution end),
       herdr_timeout: $herdr_timeout,
-      settings: (if $settings == "" then null else $settings end)
+      settings: (if $settings == "" then null else $settings end),
+      model: (if $model == "" then null else $model end)
     }]
   '
   echo "added: $name"
@@ -689,13 +719,18 @@ cmd_edit() {
   require_task "$name"
 
   local set_prompt=0 set_cwd=0 set_schedule=0 set_perm=0 set_worktree=0
-  local set_agent=0 set_execution=0 set_timeout=0 set_settings=0
-  local prompt="" cwd="" schedule="" perm_mode="" worktree="" agent="" execution="" herdr_timeout="" settings=""
+  local set_agent=0 set_execution=0 set_timeout=0 set_settings=0 set_model=0
+  local prompt="" cwd="" schedule="" perm_mode="" worktree="" agent="" execution="" herdr_timeout="" settings="" model=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --prompt)
       prompt="$2"
       set_prompt=1
+      shift 2
+      ;;
+    --model)
+      model="$2"
+      set_model=1
       shift 2
       ;;
     --settings)
@@ -780,21 +815,25 @@ cmd_edit() {
   [[ -z $perm_mode ]] || validate_perm_mode "$perm_mode"
   [[ $settings == none ]] && settings=""
   [[ -z $settings ]] || validate_settings "$settings"
+  [[ $model == none ]] && model=""
+  [[ -z $model ]] || validate_model "$model"
   [[ $agent == none ]] && agent=""
   [[ $execution == none ]] && execution=""
   [[ $herdr_timeout == none ]] && herdr_timeout=""
   # Combo check on the task as it will be after this edit.
-  local cur eff_agent eff_exec eff_perm eff_settings
+  local cur eff_agent eff_exec eff_perm eff_settings eff_model
   cur=$(jq -c --arg n "$name" '.tasks[] | select(.name == $n)' "$TASKS")
   eff_agent=$(jq -r '.agent // empty' <<<"$cur")
   eff_exec=$(jq -r '.execution // empty' <<<"$cur")
   eff_perm=$(jq -r '.permission_mode // empty' <<<"$cur")
   eff_settings=$(jq -r '.settings // empty' <<<"$cur")
+  eff_model=$(jq -r '.model // empty' <<<"$cur")
   ((set_agent)) && eff_agent="$agent"
   ((set_execution)) && eff_exec="$execution"
   ((set_perm)) && eff_perm="$perm_mode"
   ((set_settings)) && eff_settings="$settings"
-  validate_agent_fields "$eff_agent" "$eff_exec" "$herdr_timeout" "$eff_perm" "$eff_settings"
+  ((set_model)) && eff_model="$model"
+  validate_agent_fields "$eff_agent" "$eff_exec" "$herdr_timeout" "$eff_perm" "$eff_settings" "$eff_model"
 
   lock
   apply "$TASKS" \
@@ -808,6 +847,7 @@ cmd_edit() {
     --argjson have_next_due "$have_next_due" --argjson next_due "$next_due_json" \
     --argjson set_perm "$set_perm" --arg perm "$perm_mode" \
     --argjson set_settings "$set_settings" --arg settings "$settings" \
+    --argjson set_model "$set_model" --arg model "$model" \
     --argjson set_worktree "$set_worktree" \
     --argjson worktree "$([[ $worktree == true ]] && echo true || echo false)" '
     .tasks |= map(if .name == $name then
@@ -820,6 +860,7 @@ cmd_edit() {
       | (if $set_execution == 1 then .execution = (if $execution == "" then null else $execution end) else . end)
       | (if $set_timeout == 1 then .herdr_timeout = $herdr_timeout else . end)
       | (if $set_settings == 1 then .settings = (if $settings == "" then null else $settings end) else . end)
+      | (if $set_model == 1 then .model = (if $model == "" then null else $model end) else . end)
       else . end)
   '
   echo "edited: $name"
@@ -841,15 +882,17 @@ cmd_list() {
     # failed/running but never as backlog/next.
     # Agent resolution is done once here (settings + omarchy default) and
     # applied per task in jq; the omarchy default is a subprocess.
-    local s_agent s_exec o_agent s_session kinds
+    local s_agent s_exec o_agent s_session kinds s_model
     s_agent=$(setting agent)
+    s_model=$(setting model)
     s_exec=$(setting execution)
     s_session=$(setting herdr_session)
     o_agent=$("$DEFAULT_AGENT_BIN" 2>/dev/null) || o_agent=""
     kinds=$(installed_agent_kinds_json)
     jq -c --argjson map "$text_map" --slurpfile runs "$RUNS" --argjson avail "$(available_sessions_json)" \
       --argjson panes "$(live_panes_json)" --argjson kinds "$kinds" \
-      --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" \
+      --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" --arg s_model "$s_model" \
+      --argjson models "$(printf '%s\n' $MODEL_CHOICES | jq -R . | jq -sc .)" \
       --arg s_session "$s_session" --arg s_path "$SETTINGS" '
       ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
@@ -857,6 +900,8 @@ cmd_list() {
           agent: (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)),
           agent_source: (if .agent != null then "task" elif $s_agent != "" then "settings" elif $o_agent != "" then "omarchy" else "none" end),
           execution: (.execution // $s_exec),
+          model: (.model // (if $s_model != "" then $s_model else null end)),
+          model_source: (if .model != null then "task" elif $s_model != "" then "settings" else "none" end),
           next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end),
           last_run: ($last[.name] // null),
           worktrees: ($wts[.name] // 0)
@@ -875,9 +920,11 @@ cmd_list() {
           execution: $s_exec,
           agent: (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end),
           agent_source: (if $s_agent != "" then "settings" elif $o_agent != "" then "omarchy" else "none" end),
+          model: (if $s_model != "" then $s_model else null end),
           herdr_session: $s_session, path: $s_path
         }
       | .agent_kinds = $kinds
+      | .model_choices = $models
       | .badge = .failed + .backlog
       | .active = (.badge > 0)
       | .tooltip = (
@@ -987,10 +1034,11 @@ retain_runs() {
 # Claude's own output never reaches the CLI's stdout.
 run_task() {
   local name="$1" trigger="$2"
-  local task_json prompt cwd perm_override worktree_enabled settings
+  local task_json prompt cwd perm_override worktree_enabled settings model
   task_json=$(jq -c --arg n "$name" '.tasks[] | select(.name == $n)' "$TASKS")
   prompt=$(jq -r '.prompt' <<<"$task_json")
   settings=$(jq -r '.settings // empty' <<<"$task_json")
+  IFS='|' read -r model _ < <(resolve_model "$(jq -r '.model // empty' <<<"$task_json")")
   cwd=$(jq -r '.cwd' <<<"$task_json")
   perm_override=$(jq -r '.permission_mode // empty' <<<"$task_json")
   worktree_enabled=$(jq -r '.worktree' <<<"$task_json")
@@ -1017,7 +1065,7 @@ run_task() {
     | .runs += [{
         id: $id, task: $task, trigger: $trig, start: $start, end: null,
         status: "running", exit_code: null, session_id: (if $sid == "" then null else $sid end),
-        permission_mode: null, worktree_path: null, worktree_branch: null, cwd: null,
+        permission_mode: null, model: null, worktree_path: null, worktree_branch: null, cwd: null,
         backend: $backend, reason: null, pane_id: null, tab_id: null, workspace_id: null, agent_name: null
       }]
   '
@@ -1042,6 +1090,12 @@ run_task() {
     fail_config "task \"$name\" has no valid backend for agent \"$kind\" under $execution (see run $run_id log)"
     return 1
   fi
+  if [[ -n $model ]] && ! validate_model "$model" 2>>"$log_file"; then
+    fail_config "invalid model \"$model\" for \"$name\""
+    return 1
+  fi
+  # model reaches claude only; recorded on the run as what actually applied
+  [[ $kind == claude ]] || model=""
 
   local mode="$perm_override"
   if [[ -z $mode ]]; then
@@ -1092,7 +1146,7 @@ run_task() {
     # errexit off: a failed herdr query must end in finalize_run, never in a
     # run stranded as "running" (the sweep's `run` path has no `||` guard).
     set +e
-    herdr_run "$name" "$run_id" "$kind" "$prompt" "$cwd" "$run_dir" "$timeout_s" "$herdr_perm" "$settings" >>"$log_file" 2>&1
+    herdr_run "$name" "$run_id" "$kind" "$prompt" "$cwd" "$run_dir" "$timeout_s" "$herdr_perm" "$settings" "$model" >>"$log_file" 2>&1
     set -e
     status=${HERDR_RESULT%%|*}
     reason=${HERDR_RESULT#*|}
@@ -1108,6 +1162,7 @@ run_task() {
     set +e
     local -a extra=()
     [[ -n $settings ]] && extra=(--settings "$settings")
+    [[ -n $model ]] && extra+=(--model "$model")
     (cd "$run_dir" && "$CLAUDE_BIN" -p "$prompt" --session-id "$sid" --permission-mode "$mode" --output-format json "${extra[@]}") >"$log_file" 2>&1
     exit_code=$?
     set -e
@@ -1133,9 +1188,9 @@ run_task() {
   finalize_run "$run_id" "$name" "$(jq -nc --argjson ec "$exit_code" --arg st "$status" --arg sid "$sid" \
     --arg mode "$mode" --arg wp "$wt_path" --arg wb "$wt_branch" --arg rd "$run_dir" \
     --arg reason "$reason" --arg pane "$pane" --arg tab "$tab" --arg ws "$ws" --arg agent "$agent_name" \
-    --arg base "$base_commit" '
+    --arg base "$base_commit" --arg model "$model" '
     def nn: if . == "" then null else . end;
-    {exit_code: $ec, status: $st, session_id: ($sid | nn), permission_mode: ($mode | nn),
+    {exit_code: $ec, status: $st, session_id: ($sid | nn), permission_mode: ($mode | nn), model: ($model | nn),
      worktree_path: ($wp | nn), worktree_branch: ($wb | nn), cwd: $rd,
      reason: ($reason | nn), pane_id: ($pane | nn), tab_id: ($tab | nn), workspace_id: ($ws | nn),
      agent_name: ($agent | nn), base_commit: (if $wp == "" then null else $base end)}')"
@@ -1508,6 +1563,14 @@ cmd_settings() {
         json=$(jq -n --arg v "$value" '$v')
       fi
       ;;
+    model)
+      if [[ $value == null || $value == none ]]; then
+        json=null
+      else
+        validate_model "$value"
+        json=$(jq -n --arg v "$value" '$v')
+      fi
+      ;;
     herdr_session)
       [[ $value =~ ^[A-Za-z0-9._-]+$ ]] || { echo "omaroutines: invalid session name \"$value\"" >&2; return 1; }
       json=$(jq -n --arg v "$value" '$v')
@@ -1551,11 +1614,11 @@ Usage:
   omaroutines add <name> --prompt <text> --cwd <dir> [--schedule <expr>|manual]
                           [--permission-mode <mode>] [--worktree true|false]
                           [--agent <kind>] [--execution headless|herdr] [--herdr-timeout <min>]
-                          [--settings <json|file>]
+                          [--settings <json|file>] [--model <alias|id>]
   omaroutines edit <name> [--prompt ...] [--cwd ...] [--schedule ...]
                           [--permission-mode <mode>|none] [--worktree true|false]
                           [--agent <kind>|none] [--execution ...|none] [--herdr-timeout <min>|none]
-                          [--settings <json|file>|none]
+                          [--settings <json|file>|none] [--model <alias|id>|none]
   omaroutines settings [get <key> | set <key> <value>]
                                        show / read / write settings.json
   omaroutines list [--json]           list tasks
@@ -1578,7 +1641,8 @@ Default --schedule is "manual" (never fires on its own). Schedule expressions
 are systemd calendar specs, validated via `systemd-analyze calendar`.
 Agent kind resolves task --agent -> settings agent -> `omarchy default agent`;
 execution resolves task --execution -> settings execution (default headless,
-claude only).
+claude only). Model resolves task --model -> settings model -> claude's own
+default; passed as `claude --model` (claude kind only).
 EOF
 }
 
