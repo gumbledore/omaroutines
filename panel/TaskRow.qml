@@ -256,6 +256,7 @@ Item {
         Layout.fillWidth: true
         text: row.task.cwd + (row.task.worktree ? "  ·  worktree" : "  ·  no worktree")
           + "  ·  " + (row.task.agent || "no agent") + " · " + (row.task.execution || "headless")
+          + (row.task.model ? " · " + row.task.model : "")
           + (row.task.permission_mode ? "  ·  " + row.task.permission_mode : "")
         color: row.muted
         font.family: row.fontFamily

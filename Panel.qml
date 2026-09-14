@@ -35,8 +35,11 @@ Panel {
   readonly property int badge: hostWidget ? hostWidget.badge : 0
   readonly property var scheduleSettings: hostWidget ? hostWidget.scheduleSettings : ({})
   readonly property var agentKinds: hostWidget ? hostWidget.agentKinds : []
+  readonly property var modelChoices: hostWidget ? hostWidget.modelChoices : []
   readonly property string execution: String(scheduleSettings.execution || "headless")
   readonly property string defaultAgent: scheduleSettings.agent ? String(scheduleSettings.agent) : "no agent"
+  // "" = claude's own default (settings.json model is null)
+  readonly property string defaultModel: scheduleSettings.model ? String(scheduleSettings.model) : ""
   property bool configMenuVisible: false
 
   property var expanded: ({})      // task name -> true
@@ -45,6 +48,7 @@ Panel {
   property string timerStatus: ""
   property bool addFormVisible: false
   readonly property string addKey: "+add"  // rowErrors key for the add form ('+' is not a valid task name)
+  readonly property string settingsKey: "+settings"  // rowErrors key for the cog menu's setting chips
   readonly property string tasksPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state"))
     + "/omaroutines/tasks.json"
   readonly property string settingsPath: scheduleSettings.path ? String(scheduleSettings.path)
@@ -110,10 +114,22 @@ Panel {
     : [{ value: "default", label: "default (" + root.defaultAgent + ")" }]
         .concat(root.agentKinds.map(function (k) { return { value: k, label: k } }))
 
+  // Model chips: "" = follow settings.json (shown with the resolved default).
+  readonly property var modelChipChoices: [{ value: "", label: "default" + (root.defaultModel ? " (" + root.defaultModel + ")" : "") }]
+    .concat(root.modelChoices.map(function (m) { return { value: m, label: m } }))
+  // Settings chips: "" = clear the key (claude picks its own default).
+  readonly property var settingsModelChoices: [{ value: "", label: "claude default" }]
+    .concat(root.modelChoices.map(function (m) { return { value: m, label: m } }))
+
+  function setDefaultModel(model) {
+    root.runAction(root.settingsKey, ["settings", "set", "model", model === "" ? "none" : model])
+  }
+
   function submitAdd() {
     var args = ["add", addForm.name.trim(), "--prompt", addForm.prompt, "--cwd", root.expandHome(addForm.cwd),
       "--schedule", addForm.schedule.trim() || "manual", "--worktree", addForm.worktree ? "true" : "false"]
     if (addForm.permissionMode.trim() !== "") args.push("--permission-mode", addForm.permissionMode.trim())
+    if (addForm.model !== "") args.push("--model", addForm.model)
     if (addForm.backend !== root.execution) args.push("--execution", addForm.backend)
     if (addForm.backend === "headless") {
       if (String(root.scheduleSettings.agent || "") !== "claude") args.push("--agent", "claude")
@@ -247,7 +263,7 @@ Panel {
               Text {
                 id: modeText
                 anchors.centerIn: parent
-                text: root.execution + " · " + root.defaultAgent
+                text: root.execution + " · " + root.defaultAgent + (root.defaultModel ? " · " + root.defaultModel : "")
                 color: root.fg
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -257,6 +273,7 @@ Panel {
                 visible: modeArea.containsMouse
                 text: (root.execution === "herdr" ? "Runs are live agents in the hidden omaroutines herdr session"
                   : "Runs are claude -p (headless)") + "\nchange: omaroutines settings set execution herdr|headless"
+                  + "\nmodel: " + (root.defaultModel || "claude default") + " (cog menu, or: omaroutines settings set model <alias>)"
                 fontFamily: root.fontFamily
               }
             }
@@ -282,19 +299,54 @@ Panel {
         }
         PanelActionButton {
           iconText: "󰒓"
-          tooltipText: root.configMenuVisible ? "Hide" : "Open settings.json / tasks.json"
+          tooltipText: root.configMenuVisible ? "Hide settings" : "Settings: default model, settings.json / tasks.json"
           onClicked: root.configMenuVisible = !root.configMenuVisible
         }
       }
 
       // ------------------------------------------------------- config menu
-      RowLayout {
+      // Default model for every task without its own --model (claude kind
+      // only); a chip click is `settings set model <alias>`.
+      ColumnLayout {
         visible: root.configMenuVisible
         Layout.fillWidth: true
-        spacing: Style.space(6)
-        Item { Layout.fillWidth: true }
-        Button { text: "settings.json"; iconText: "󰒓"; iconSize: Style.font.caption; fontSize: Style.font.caption; tooltipText: root.settingsPath; onClicked: root.openConfig(root.settingsPath) }
-        Button { text: "tasks.json"; iconText: "󰈙"; iconSize: Style.font.caption; fontSize: Style.font.caption; tooltipText: root.tasksPath; onClicked: root.openConfig(root.tasksPath) }
+        spacing: Style.space(4)
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          Text { text: "default model"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+          Flow {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: root.settingsModelChoices
+              delegate: Button {
+                required property var modelData
+                text: modelData.label
+                selected: modelData.value === root.defaultModel
+                bordered: true
+                enabled: !root.actionBusy
+                foreground: root.fg
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.setDefaultModel(modelData.value)
+              }
+            }
+          }
+          Button { text: "settings.json"; iconText: "󰒓"; iconSize: Style.font.caption; fontSize: Style.font.caption; tooltipText: root.settingsPath; onClicked: root.openConfig(root.settingsPath) }
+          Button { text: "tasks.json"; iconText: "󰈙"; iconSize: Style.font.caption; fontSize: Style.font.caption; tooltipText: root.tasksPath; onClicked: root.openConfig(root.tasksPath) }
+        }
+        Text {
+          visible: (root.rowErrors[root.settingsKey] || "") !== ""
+          Layout.fillWidth: true
+          text: "✗ " + (root.rowErrors[root.settingsKey] || "")
+          color: root.urgent
+          wrapMode: Text.Wrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.setMap("rowErrors", root.settingsKey, undefined) }
+        }
       }
 
       // ----------------------------------------------------------- add form
@@ -312,13 +364,14 @@ Panel {
         property bool worktree: true
         property string backend: root.execution
         property string agent: "default"
+        property string model: ""
         readonly property bool complete: nameField.text.trim() !== "" && promptField.text.trim() !== "" && cwdField.text.trim() !== ""
         readonly property string error: root.rowErrors[root.addKey] || ""
 
         function clear() {
           nameField.text = ""; promptField.text = ""; cwdField.text = ""
           scheduleField.text = "manual"; permField.text = ""; addForm.worktree = true
-          addForm.backend = root.execution; addForm.agent = "default"
+          addForm.backend = root.execution; addForm.agent = "default"; addForm.model = ""
         }
         function submit() { if (addForm.complete && !root.actionBusy) root.submitAdd() }
 
@@ -367,6 +420,29 @@ Panel {
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 onClicked: addForm.agent = modelData.value
+              }
+            }
+          }
+        }
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(6)
+          Text { text: "model"; color: root.muted; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+          Flow {
+            Layout.fillWidth: true
+            spacing: Style.space(4)
+            Repeater {
+              model: root.modelChipChoices
+              delegate: Button {
+                required property var modelData
+                text: modelData.label
+                selected: modelData.value === addForm.model
+                bordered: true
+                foreground: root.fg
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: addForm.model = modelData.value
               }
             }
           }

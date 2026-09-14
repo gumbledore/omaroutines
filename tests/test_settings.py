@@ -220,8 +220,9 @@ def test_legacy_task_without_new_keys_still_lists_and_runs(cli, state_home, cwd_
 def test_list_json_exposes_settings_and_installed_kinds(cli, config_home, default_agent_bin):
     r = cli("list", "--json")
     p = json.loads(r.stdout)
-    assert p["settings"] == {"execution": "headless", "agent": "claude", "agent_source": "omarchy",
+    assert p["settings"] == {"execution": "headless", "agent": "claude", "agent_source": "omarchy", "model": None,
                              "herdr_session": "omaroutines", "path": str(settings_file(config_home))}
+    assert p["model_choices"] == ["sonnet", "opus", "fable", "haiku"]
     kinds = p["agent_kinds"]
     assert isinstance(kinds, list)
     assert set(kinds) <= {"pi", "omp", "opencode", "claude", "codex", "grok", "gemini", "copilot"}
@@ -230,3 +231,38 @@ def test_list_json_exposes_settings_and_installed_kinds(cli, config_home, defaul
     cli("settings", "set", "agent", "codex")
     s = json.loads(cli("list", "--json").stdout)["settings"]
     assert (s["execution"], s["agent"], s["agent_source"]) == ("herdr", "codex", "settings")
+
+
+# --- model ----------------------------------------------------------------------
+
+
+def test_settings_set_model_and_clear(cli, config_home):
+    r = cli("settings", "set", "model", "sonnet")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(settings_file(config_home).read_text())["model"] == "sonnet"
+    assert cli("settings", "get", "model").stdout.strip() == "sonnet"
+    assert cli("settings", "set", "model", "claude-opus-5").returncode == 0
+    assert cli("settings", "set", "model", "bad model").returncode != 0
+    assert cli("settings", "set", "model", "none").returncode == 0
+    assert json.loads(settings_file(config_home).read_text())["model"] is None
+
+
+def test_model_resolution_task_then_settings(cli, state_home, cwd_dir):
+    add_task(cli, "t1", cwd_dir)
+    add_task(cli, "t2", cwd_dir, model="opus")
+    t1, t2 = listing_task(cli, "t1"), listing_task(cli, "t2")
+    assert (t1["model"], t1["model_source"]) == (None, "none")
+    assert (t2["model"], t2["model_source"]) == ("opus", "task")
+    assert task_by_name(state_home, "t1")["model"] is None
+
+    cli("settings", "set", "model", "sonnet")
+    t1, t2 = listing_task(cli, "t1"), listing_task(cli, "t2")
+    assert (t1["model"], t1["model_source"]) == ("sonnet", "settings")
+    assert (t2["model"], t2["model_source"]) == ("opus", "task")
+    assert json.loads(cli("list", "--json").stdout)["settings"]["model"] == "sonnet"
+
+    r = cli("edit", "t2", "--model", "none")
+    assert r.returncode == 0, r.stderr
+    assert listing_task(cli, "t2")["model_source"] == "settings"
+    assert cli("edit", "t2", "--model", "not a model").returncode != 0
+    assert cli("add", "t3", "--prompt", "x", "--cwd", str(cwd_dir), "--model", "").returncode == 0
