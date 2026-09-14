@@ -148,12 +148,35 @@ def test_model_forwarded_to_herdr_claude(herdr_cli, state_home, cwd_dir, stub_di
     assert runs_for(state_home, "t1")[0]["model"] == "opus"
 
 
-def test_model_ignored_for_non_claude_kinds(herdr_cli, state_home, cwd_dir, stub_dir):
-    r = add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex", model="opus")
+@pytest.mark.parametrize("kind,flag", [("codex", "--approve-for-me"), ("gemini", "--yolo"), ("pi", "")])
+def test_task_model_forwarded_to_kinds_with_model_flag(herdr_cli, state_home, cwd_dir, stub_dir, kind, flag):
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent=kind, model="gpt-5")
+    assert herdr_cli("trigger", "t1").returncode == 0
+    args = (stub_dir / "start-args.t1-1").read_text().split()
+    assert args == ([flag] if flag else []) + ["--model", "gpt-5"]
+    assert runs_for(state_home, "t1")[0]["model"] == "gpt-5"
+
+
+def test_model_ignored_for_kinds_without_model_flag(herdr_cli, state_home, cwd_dir, stub_dir):
+    r = add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="opencode", model="opus")
     assert "model is ignored" in r.stderr
+    assert herdr_cli("trigger", "t1").returncode == 0
+    assert (stub_dir / "start-args.t1-1").read_text().split() == ["--auto"]
+    assert runs_for(state_home, "t1")[0]["model"] is None
+
+
+def test_settings_model_default_is_claude_only(herdr_cli, state_home, cwd_dir, stub_dir):
+    herdr_cli("settings", "set", "model", "sonnet")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false", agent="codex")
+    add_task(herdr_cli, "t2", cwd_dir, worktree="false", agent="claude")
+    tasks = {t["name"]: t for t in json.loads(herdr_cli("list", "--json").stdout)["tasks"]}
+    assert (tasks["t1"]["model"], tasks["t1"]["model_source"]) == (None, "none")
+    assert (tasks["t2"]["model"], tasks["t2"]["model_source"]) == ("sonnet", "settings")
     assert herdr_cli("trigger", "t1").returncode == 0
     assert (stub_dir / "start-args.t1-1").read_text().split() == ["--approve-for-me"]
     assert runs_for(state_home, "t1")[0]["model"] is None
+    assert herdr_cli("trigger", "t2").returncode == 0
+    assert (stub_dir / "start-args.t2-2").read_text().split() == ["--permission-mode", "auto", "--model", "sonnet"]
 
 
 def test_settings_ignored_for_non_claude_kinds(herdr_cli, state_home, cwd_dir, stub_dir):

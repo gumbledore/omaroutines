@@ -189,14 +189,17 @@ rejected when typed and, at fire time, becomes a logged `failure` with
 resolves to herdr is honored for kinds whose unattended flags take it
 (claude, grok); for any other kind it is accepted with a warning — ignored.
 
-Model = task `model` → settings `model` → none (claude's own default, which
-is whatever `claude` would pick unprompted — the reason this exists). It is
-passed as `claude --model <value>` on both backends, claude kind only (other
-kinds: accepted with a warning, ignored). Values are validated only for
-shape (`^[A-Za-z0-9][A-Za-z0-9._:-]*$`): an alias (`sonnet`, `opus`,
-`fable`, `haiku`) or a full model id; claude rejects unknown ones at launch.
-The run record carries the `model` that actually applied (null when none
-or non-claude).
+Model = task `model` → settings `model` → none (the agent's own default,
+which for claude is whatever it would pick unprompted — the reason this
+exists). It is passed as `--model <value>` to kinds whose CLI has that flag
+(`model_flag_kind`: claude, pi, codex, gemini; omp/opencode/grok/copilot
+have none and get a warning at add/edit, ignored at run time). The settings
+default applies to claude only, since model names are per vendor; a task
+`--model` on pi/codex/gemini is passed verbatim. Values are validated only
+for shape (`^[A-Za-z0-9][A-Za-z0-9._:-]*$`): a claude alias (`sonnet`,
+`opus`, `fable`, `haiku`) or a vendor model id; the agent rejects unknown
+ones at launch. The run record carries the `model` that actually applied
+(null when none or dropped).
 
 ## Execution (`run_task`, shared by trigger / sweep / backlog run)
 

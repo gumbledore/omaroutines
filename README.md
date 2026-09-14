@@ -151,10 +151,14 @@ retry for a single task:
     omaroutines edit nightly-report --settings '{"sandbox":{"allowUnsandboxedCommands":false}}'
 
 Each run also resolves a **model** (task `--model` → `settings.json` `model`
-→ claude's own default), passed as `claude --model` on both backends. Claude
-only; ignored for other kinds. Use an alias (`sonnet`, `opus`, `fable`,
-`haiku`) or a full model id. The panel's cog menu sets the default with one
-click and the add form offers the same chips per task.
+→ the agent's own default), passed as `--model` to agents that take it:
+claude on both backends, plus pi, codex and gemini under herdr (omp,
+opencode, grok and copilot have no model flag; ignored with a warning). The
+settings default applies to claude only since model names are per vendor;
+a task `--model` is passed verbatim, so use a claude alias (`sonnet`,
+`opus`, `fable`, `haiku`) or the vendor's model id. The panel's cog menu
+sets the default with one click and the add form offers the same chips per
+task.
 
     omaroutines settings set model sonnet      # every non-pinned task -> sonnet
     omaroutines edit paper-watch --model opus  # this one orchestrates: opus

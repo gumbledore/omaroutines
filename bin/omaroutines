@@ -384,6 +384,14 @@ perm_override_kind() {
   case "$1" in claude | grok) return 0 ;; *) return 1 ;; esac
 }
 
+# Kinds whose CLI takes `--model <value>` (checked against each one's --help;
+# omp, opencode, grok and copilot expose no model flag). A task --model is
+# passed verbatim to these; the settings default applies to claude only
+# since model names are per vendor.
+model_flag_kind() {
+  case "$1" in claude | pi | codex | gemini) return 0 ;; *) return 1 ;; esac
+}
+
 # Agent lifecycle state by name via `agent list`; "" when absent.
 herdr_agent_state() {
   hdq agent list 2>/dev/null | jq -r --arg n "$1" '.result.agents[] | select(.name == $n) | .agent_status' 2>/dev/null | head -1
@@ -457,7 +465,7 @@ herdr_run() {
   flags=($(unattended_flags "$kind" "$perm_mode"))
   # Appended unsplit: a JSON literal may contain spaces. Claude only.
   [[ -n $settings && $kind == claude ]] && flags+=(--settings "$settings")
-  [[ -n $model && $kind == claude ]] && flags+=(--model "$model")
+  [[ -n $model ]] && model_flag_kind "$kind" && flags+=(--model "$model")
   out=$(hdm agent start "$agent" --kind "$kind" --pane "$HERDR_PANE" --timeout "$HERDR_AGENT_START_MS" -- "${flags[@]}" 2>&1) || {
     if [[ $out == *agent_name_taken* ]]; then
       agent="${agent}-$RANDOM"
@@ -578,8 +586,8 @@ validate_agent_fields() {
     echo "omaroutines: warning: permission mode is ignored under herdr for agent \"${kind:-unset}\"" >&2
   [[ -n $settings && $exec_resolved == herdr && $kind != claude ]] &&
     echo "omaroutines: warning: settings is ignored under herdr for agent \"${kind:-unset}\"" >&2
-  [[ -n $model && $exec_resolved == herdr && $kind != claude ]] &&
-    echo "omaroutines: warning: model is ignored under herdr for agent \"${kind:-unset}\"" >&2
+  [[ -n $model && $exec_resolved == herdr ]] && ! model_flag_kind "$kind" &&
+    echo "omaroutines: warning: model is ignored under herdr for agent \"${kind:-unset}\" (no --model flag)" >&2
   return 0
 }
 
@@ -896,12 +904,14 @@ cmd_list() {
       --arg s_session "$s_session" --arg s_path "$SETTINGS" '
       ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
-      | (.tasks | map(. + {
-          agent: (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)),
+      | (.tasks | map(
+          (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)) as $ra
+          | . + {
+          agent: $ra,
           agent_source: (if .agent != null then "task" elif $s_agent != "" then "settings" elif $o_agent != "" then "omarchy" else "none" end),
           execution: (.execution // $s_exec),
-          model: (.model // (if $s_model != "" then $s_model else null end)),
-          model_source: (if .model != null then "task" elif $s_model != "" then "settings" else "none" end),
+          model: (.model // (if $s_model != "" and $ra == "claude" then $s_model else null end)),
+          model_source: (if .model != null then "task" elif $s_model != "" and $ra == "claude" then "settings" else "none" end),
           next_due_text: (if .next_due == null then "-" else $map[(.next_due|tostring)] end),
           last_run: ($last[.name] // null),
           worktrees: ($wts[.name] // 0)
@@ -1038,7 +1048,8 @@ run_task() {
   task_json=$(jq -c --arg n "$name" '.tasks[] | select(.name == $n)' "$TASKS")
   prompt=$(jq -r '.prompt' <<<"$task_json")
   settings=$(jq -r '.settings // empty' <<<"$task_json")
-  IFS='|' read -r model _ < <(resolve_model "$(jq -r '.model // empty' <<<"$task_json")")
+  local model_source
+  IFS='|' read -r model model_source < <(resolve_model "$(jq -r '.model // empty' <<<"$task_json")")
   cwd=$(jq -r '.cwd' <<<"$task_json")
   perm_override=$(jq -r '.permission_mode // empty' <<<"$task_json")
   worktree_enabled=$(jq -r '.worktree' <<<"$task_json")
@@ -1094,8 +1105,11 @@ run_task() {
     fail_config "invalid model \"$model\" for \"$name\""
     return 1
   fi
-  # model reaches claude only; recorded on the run as what actually applied
-  [[ $kind == claude ]] || model=""
+  # A task --model reaches any kind with a --model flag; the settings default
+  # is claude-only. Recorded on the run as what actually applied.
+  if [[ -n $model ]] && { ! model_flag_kind "$kind" || [[ $model_source == settings && $kind != claude ]]; }; then
+    model=""
+  fi
 
   local mode="$perm_override"
   if [[ -z $mode ]]; then
@@ -1641,8 +1655,9 @@ Default --schedule is "manual" (never fires on its own). Schedule expressions
 are systemd calendar specs, validated via `systemd-analyze calendar`.
 Agent kind resolves task --agent -> settings agent -> `omarchy default agent`;
 execution resolves task --execution -> settings execution (default headless,
-claude only). Model resolves task --model -> settings model -> claude's own
-default; passed as `claude --model` (claude kind only).
+claude only). Model resolves task --model -> settings model -> the agent's own
+default; passed as --model to claude, pi, codex, gemini (settings default:
+claude only).
 EOF
 }
 
