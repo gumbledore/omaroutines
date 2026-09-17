@@ -26,7 +26,7 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
   → defaults + stderr warning, file never clobbered). Keys: `execution`
   (`headless`|`herdr`), `agent` (kind or null), `model` (claude model alias
   or id, or null), `herdr_session`, `herdr_retain`, `herdr_timeout_minutes`,
-  `herdr_launch_stagger_seconds`.
+  `herdr_launch_stagger_seconds`, `notify` (`all`|`failure`|`needs_input`|`none`).
 - `manifest.json` — Omarchy plugin manifest (`bar-widget` kind only; the panel
   is private to the widget, as in omagit/omaplug).
 - `BarWidget.qml` — bar icon + owner of the `list --json` poll (re-run on
@@ -93,10 +93,10 @@ migration.
 {"version":1,"nextRunId":1,"runs":[{
   "id":1,
   "task":"lint-my-repo",
-  "trigger":"manual",               // manual | scheduled | backlog-catchup
+  "trigger":"manual",               // manual | scheduled | missed | backlog-catchup
   "start":1756400000,
   "end":1756400300,                 // null while running
-  "status":"success",               // running | success | failure
+  "status":"success",               // running | success | failure | needs_input
   "exit_code":0,
   "session_id":"uuid",
   "permission_mode":"auto",
@@ -107,7 +107,8 @@ migration.
   "backend":"headless",             // headless | herdr
   "reason":null,                    // null | blocked | timeout | exited | invalid_config
   "pane_id":null, "tab_id":null, "workspace_id":null, "agent_name":null,  // herdr runs; pane/tab null once pruned
-  "base_commit":null                // worktree base, for the unchanged check at pane pruning
+  "base_commit":null,               // worktree base, for the unchanged check at pane pruning
+  "dismissed":true                  // set by `dismiss`; a dismissed failure is not counted as failed
 }]}
 ```
 
@@ -137,6 +138,7 @@ omaroutines enable <name> | disable <name>
 omaroutines trigger <name>              # run now (trigger=manual)
 omaroutines sweep                       # called by the timer
 omaroutines backlog run|skip <name>     # resolve a pending multi-miss backlog
+omaroutines dismiss <name>              # clear a failed last run (badge/tint)
 omaroutines log <name> [--json]
 omaroutines resume <run-id> [--terminal]  # headless runs
 omaroutines attach <run-id> [--terminal]  # herdr runs
@@ -148,8 +150,8 @@ Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
 mutate state. `list --json` is the bar widget's whole data contract: each task
 gains `next_due_text` and `last_run` (`{id,status,trigger,start,end}` of its
 newest run, or null); top level carries `count`, `enabled`, `failed`,
-`running`, `backlog` (enabled tasks with a pending backlog), `badge`
-(= failed + backlog), `next` (earliest-due enabled non-manual task, or null),
+`needs_input`, `running`, `backlog` (enabled tasks with a pending backlog), `badge`
+(= failed + needs_input + backlog; dismissed runs count in neither), `next` (earliest-due enabled non-manual task, or null),
 `active` (= badge > 0) and a ready-made `tooltip` string. Disabled tasks count
 as failed/running but never as backlog/next. For the panel, `last_run` also
 carries `session_available` (the session transcript still exists), `backend`,
@@ -262,7 +264,7 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is
    task `herdr_timeout` → settings `herdr_timeout_minutes` (minutes; the
    `OMAROUTINES_HERDR_TIMEOUT` env override is seconds, for tests).
-5. Settle: `done`/`idle` → `success`; `blocked` → `failure/blocked`; still
+5. Settle: `done`/`idle` → `success`; `blocked` → `needs_input/blocked`; still
    `working` at timeout → `failure/timeout`; agent gone or `unknown` →
    `failure/exited`. The sweep never kills a pane.
 6. `agent read --source recent` is appended to `logs/<id>.out` (same 0600
@@ -272,6 +274,25 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
 
 `trigger`/`backlog run` print `run <id>: <status> (pane <id>)` for herdr runs
 and `(session <uuid>)` for headless ones.
+
+### Runs waiting on input
+
+A `needs_input` run stays open: its pane is kept (retention never closes a
+blocked agent) and every sweep checks it via `agent list` before firing due
+tasks. Still `blocked`/`working` → unchanged. `done`/`idle` (answered and
+finished) → `success`; agent gone or server down → `failure/exited`; the
+outcome gets a transcript snapshot and a fresh `end`. A failed `agent list`
+leaves it for the next sweep. `dismiss` clears it from the badge without
+closing it.
+
+### Notifications
+
+`finalize_run` sends a desktop notification (`$NOTIFY_BIN`) when a
+non-manual run ends as `failure` or `needs_input`, filtered by the `notify`
+setting (default `all`). Clicking runs `attach <id> --terminal` for herdr
+runs with a pane, `resume <id> --terminal` for headless runs, otherwise
+`show-overlay`. `needs_input` is sent `-u critical` so it stays up. A
+`needs_input` run that later settles notifies again only if it fails.
 
 ### Pane retention
 
@@ -324,7 +345,11 @@ For each enabled task with non-null `next_due <= now`:
 - Compute the occurrence *after* `next_due`:
   `systemd-analyze calendar --iterations=1 --base-time=@next_due "<expr>"`.
   If that second occurrence is also `<= now`, more than one fire was missed
-  → **backlog**. Otherwise → single miss → fire (`trigger=scheduled`).
+  → **backlog**. Otherwise → single miss → fire: `trigger=scheduled`, or
+  `trigger=missed` when more than `MISS_GRACE` (120 s) late. A missed run
+  typically fires the instant the machine wakes, before network/auth/herdr
+  are usable (herdr prompts stalled), so `run_task` first sleeps
+  `RESUME_DELAY` (60 s).
 - Backlog: set `backlog_since=now`, send ONE notification via
   `$NOTIFY_BIN` ("<n> missed runs of <task> — click to run the backlog") with
   `--exec omaroutines backlog run <name>`. Sweep does not block.
@@ -399,6 +424,8 @@ All overridable via env, read once at CLI start:
 | `OMAROUTINES_CLAUDE_BIN` | `claude` | fake `claude` script in tests; must honor `-p`, `--session-id`, `--permission-mode`, `--resume` |
 | `OMAROUTINES_NOTIFY_BIN` | `omarchy-notification-send` | fake notifier in tests |
 | `OMAROUTINES_BACKLOG_TIMEOUT` | `900` | seconds before an unanswered backlog resolves to skip |
+| `OMAROUTINES_MISS_GRACE` | `120` | seconds late before a single fire is `trigger=missed` |
+| `OMAROUTINES_RESUME_DELAY` | `60` | settle delay before a `missed` run starts |
 | `OMAROUTINES_NOW` | `date +%s` | frozen clock for deterministic sweep/backlog tests |
 | `OMAROUTINES_CLAUDE_HOME` | `~/.claude` | where `settings.json` and `projects/` are read |
 | `OMAROUTINES_SWEEP_WAIT` | unset | `1` makes `sweep` wait for the runs it launched (tests only) |

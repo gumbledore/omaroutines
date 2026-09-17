@@ -72,6 +72,16 @@ def test_single_miss_fires_silently(cli, state_home, cwd_dir, notify_log):
     assert notify_calls(notify_log) == []
 
 
+def test_late_single_miss_is_labeled_missed(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    # next_due T+900; woke at T+1500, before the following occurrence
+    r = sweep(cli, T + 1500, OMAROUTINES_SWEEP_WAIT="1", OMAROUTINES_RESUME_DELAY="0")
+    assert r.returncode == 0, r.stderr
+    assert "t1: fired (missed)" in r.stdout
+    assert runs_for(state_home, "t1")[0]["trigger"] == "missed"
+    assert notify_calls(notify_log) == []
+
+
 def test_future_next_due_not_fired(cli, state_home, cwd_dir, notify_log):
     add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
     r = sweep(cli, T)  # next_due is T+900, still in the future
