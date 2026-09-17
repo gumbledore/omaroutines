@@ -141,55 +141,64 @@ Item {
         elide: Text.ElideRight
       }
 
-      // last-run chip
-      Rectangle {
-        visible: row.lastRun !== null
-        implicitWidth: chip.implicitWidth + Style.space(8)
-        implicitHeight: chip.implicitHeight + Style.space(2)
-        radius: height / 2
-        readonly property color tone: Format.statusColor(row.failed || row.lastStatus !== "failure" ? row.lastStatus : "", row.accent, row.urgent, row.muted)
-        color: Util.alpha(tone, 0.18)
-        border.width: 1
-        border.color: tone
-        RowLayout {
-          id: chip
-          anchors.centerIn: parent
-          spacing: Style.space(3)
-          Text {
-            visible: row.running
-            text: "󰑐"
-            color: row.accent
-            font.family: row.fontFamily
-            font.pixelSize: row.capSize
-            RotationAnimation on rotation { from: 0; to: 360; duration: 900; loops: Animation.Infinite; running: row.running }
-          }
-          Text {
-            text: !row.lastRun ? ""
-              : row.running ? "running since " + Format.clock(row.lastRun.start)
-              : row.lastStatus + (row.lastRun.reason ? " · " + row.lastRun.reason : "") + " " + Format.clock(row.lastRun.end) + " · " + row.lastRun.trigger
-            color: row.fg
-            font.family: row.fontFamily
-            font.pixelSize: row.capSize
+      // last-run chip, in a fixed slot so the columns line up across rows
+      Item {
+        Layout.preferredWidth: Style.space(190)
+        implicitHeight: chipRect.implicitHeight
+        Rectangle {
+          id: chipRect
+          visible: row.lastRun !== null
+          anchors.verticalCenter: parent.verticalCenter
+          width: Math.min(implicitWidth, parent.width)
+          clip: true
+          implicitWidth: chip.implicitWidth + Style.space(8)
+          implicitHeight: chip.implicitHeight + Style.space(2)
+          radius: height / 2
+          readonly property color tone: Format.statusColor(row.failed || row.lastStatus !== "failure" ? row.lastStatus : "", row.accent, row.urgent, row.muted)
+          color: Util.alpha(tone, 0.18)
+          border.width: 1
+          border.color: tone
+          RowLayout {
+            id: chip
+            anchors.centerIn: parent
+            spacing: Style.space(3)
+            Text {
+              visible: row.running
+              text: "󰑐"
+              color: row.accent
+              font.family: row.fontFamily
+              font.pixelSize: row.capSize
+              RotationAnimation on rotation { from: 0; to: 360; duration: 900; loops: Animation.Infinite; running: row.running }
+            }
+            Text {
+              text: !row.lastRun ? ""
+                : row.running ? "running since " + Format.clock(row.lastRun.start)
+                : row.lastStatus + (row.lastRun.reason ? " · " + row.lastRun.reason : "") + " " + Format.clock(row.lastRun.end) + " · " + row.lastRun.trigger
+              color: row.fg
+              font.family: row.fontFamily
+              font.pixelSize: row.capSize
+            }
           }
         }
       }
 
+      // always laid out (hidden via opacity) so rows keep the same columns
       PanelActionButton {
-        visible: row.failed
+        opacity: row.failed ? 1 : 0
         iconText: "󰅖"
         size: Style.space(16)
         fontSize: row.capSize
         foreground: row.muted
         hoverColor: row.urgent
-        enabled: !row.anyBusy
+        enabled: row.failed && !row.anyBusy
         tooltipText: "Dismiss this failure"
         onClicked: row.act(["dismiss", row.name])
       }
 
       // kept (unmerged) worktrees awaiting review; pruned on panel open once merged
       Text {
-        visible: Number(row.task.worktrees || 0) > 0
-        text: row.task.worktrees + " worktree" + (row.task.worktrees === 1 ? "" : "s")
+        Layout.preferredWidth: Style.space(72)
+        text: Number(row.task.worktrees || 0) === 0 ? "" : row.task.worktrees + " worktree" + (row.task.worktrees === 1 ? "" : "s")
         color: row.muted
         font.family: row.fontFamily
         font.pixelSize: row.capSize
