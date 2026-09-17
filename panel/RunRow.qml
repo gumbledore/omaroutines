@@ -35,7 +35,7 @@ RowLayout {
     font.family: runRow.row.fontFamily
     font.pixelSize: runRow.row.capSize
     font.bold: runRow.run.status === "failure"
-    Layout.preferredWidth: Style.space(runRow.run.reason ? 78 : 48)
+    Layout.preferredWidth: Style.space(runRow.run.reason ? 100 : 48)
   }
   Text {
     Layout.fillWidth: true

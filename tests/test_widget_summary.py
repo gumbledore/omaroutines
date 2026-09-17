@@ -54,7 +54,7 @@ def test_last_run_null_then_newest(cli, state_home, cwd_dir):
     assert lr["status"] == "failure"
     assert lr["trigger"] == "manual"
     assert isinstance(lr["start"], int) and isinstance(lr["end"], int)
-    assert set(lr) == {"id", "status", "trigger", "start", "end", "session_available", "backend", "reason", "pane_id", "pane_available"}
+    assert set(lr) == {"id", "status", "trigger", "start", "end", "session_available", "backend", "reason", "dismissed", "pane_id", "pane_available"}
 
 
 def test_failed_run_sets_badge_and_tooltip(cli, state_home, cwd_dir):
@@ -65,6 +65,19 @@ def test_failed_run_sets_badge_and_tooltip(cli, state_home, cwd_dir):
     assert p["badge"] == 1
     assert p["active"] is True
     assert p["tooltip"] == "Next: t1 Fri 28 Aug 21:15 · 1 failed"
+
+
+def test_dismiss_clears_failure_until_next_run(cli, state_home, cwd_dir):
+    add_task(cli, "t1", cwd_dir, worktree="false")
+    cli("trigger", "t1", env_overrides={"FAKE_CLAUDE_EXIT": "1"})
+    r = cli("dismiss", "t1")
+    assert r.returncode == 0, r.stderr
+    p = listing(cli)
+    assert p["failed"] == 0 and p["badge"] == 0
+    assert task(p, "t1")["last_run"]["dismissed"] is True
+
+    cli("trigger", "t1", env_overrides={"FAKE_CLAUDE_EXIT": "1"})
+    assert listing(cli)["failed"] == 1
 
 
 def test_healthy_enabled_task_is_not_active(cli, state_home, cwd_dir):

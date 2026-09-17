@@ -93,7 +93,7 @@ migration.
 {"version":1,"nextRunId":1,"runs":[{
   "id":1,
   "task":"lint-my-repo",
-  "trigger":"manual",               // manual | scheduled | backlog-catchup
+  "trigger":"manual",               // manual | scheduled | missed | backlog-catchup
   "start":1756400000,
   "end":1756400300,                 // null while running
   "status":"success",               // running | success | failure
@@ -107,7 +107,8 @@ migration.
   "backend":"headless",             // headless | herdr
   "reason":null,                    // null | blocked | timeout | exited | invalid_config
   "pane_id":null, "tab_id":null, "workspace_id":null, "agent_name":null,  // herdr runs; pane/tab null once pruned
-  "base_commit":null                // worktree base, for the unchanged check at pane pruning
+  "base_commit":null,               // worktree base, for the unchanged check at pane pruning
+  "dismissed":true                  // set by `dismiss`; a dismissed failure is not counted as failed
 }]}
 ```
 
@@ -137,6 +138,7 @@ omaroutines enable <name> | disable <name>
 omaroutines trigger <name>              # run now (trigger=manual)
 omaroutines sweep                       # called by the timer
 omaroutines backlog run|skip <name>     # resolve a pending multi-miss backlog
+omaroutines dismiss <name>              # clear a failed last run (badge/tint)
 omaroutines log <name> [--json]
 omaroutines resume <run-id> [--terminal]  # headless runs
 omaroutines attach <run-id> [--terminal]  # herdr runs
@@ -324,7 +326,11 @@ For each enabled task with non-null `next_due <= now`:
 - Compute the occurrence *after* `next_due`:
   `systemd-analyze calendar --iterations=1 --base-time=@next_due "<expr>"`.
   If that second occurrence is also `<= now`, more than one fire was missed
-  → **backlog**. Otherwise → single miss → fire (`trigger=scheduled`).
+  → **backlog**. Otherwise → single miss → fire: `trigger=scheduled`, or
+  `trigger=missed` when more than `MISS_GRACE` (120 s) late. A missed run
+  typically fires the instant the machine wakes, before network/auth/herdr
+  are usable (herdr prompts stalled), so `run_task` first sleeps
+  `RESUME_DELAY` (60 s).
 - Backlog: set `backlog_since=now`, send ONE notification via
   `$NOTIFY_BIN` ("<n> missed runs of <task> — click to run the backlog") with
   `--exec omaroutines backlog run <name>`. Sweep does not block.
@@ -399,6 +405,8 @@ All overridable via env, read once at CLI start:
 | `OMAROUTINES_CLAUDE_BIN` | `claude` | fake `claude` script in tests; must honor `-p`, `--session-id`, `--permission-mode`, `--resume` |
 | `OMAROUTINES_NOTIFY_BIN` | `omarchy-notification-send` | fake notifier in tests |
 | `OMAROUTINES_BACKLOG_TIMEOUT` | `900` | seconds before an unanswered backlog resolves to skip |
+| `OMAROUTINES_MISS_GRACE` | `120` | seconds late before a single fire is `trigger=missed` |
+| `OMAROUTINES_RESUME_DELAY` | `60` | settle delay before a `missed` run starts |
 | `OMAROUTINES_NOW` | `date +%s` | frozen clock for deterministic sweep/backlog tests |
 | `OMAROUTINES_CLAUDE_HOME` | `~/.claude` | where `settings.json` and `projects/` are read |
 | `OMAROUTINES_SWEEP_WAIT` | unset | `1` makes `sweep` wait for the runs it launched (tests only) |

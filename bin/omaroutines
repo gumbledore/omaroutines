@@ -19,6 +19,8 @@ HERDR_LAUNCH_STAMP="$STATE_DIR/.herdr-launch-stamp"
 CLAUDE_BIN="${OMAROUTINES_CLAUDE_BIN:-claude}"
 NOTIFY_BIN="${OMAROUTINES_NOTIFY_BIN:-omarchy-notification-send}"
 BACKLOG_TIMEOUT="${OMAROUTINES_BACKLOG_TIMEOUT:-900}"
+MISS_GRACE="${OMAROUTINES_MISS_GRACE:-120}"     # seconds late before a fire counts as missed
+RESUME_DELAY="${OMAROUTINES_RESUME_DELAY:-60}" # settle time before a missed run starts
 CLAUDE_HOME="${OMAROUTINES_CLAUDE_HOME:-$HOME/.claude}"
 TERMINAL_BIN="${OMAROUTINES_TERMINAL_BIN:-xdg-terminal-exec}"
 DEFAULT_AGENT_BIN="${OMAROUTINES_DEFAULT_AGENT_BIN:-omarchy-default-agent}"
@@ -902,7 +904,7 @@ cmd_list() {
       --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" --arg s_model "$s_model" \
       --argjson models "$(printf '%s\n' $MODEL_CHOICES | jq -R . | jq -sc .)" \
       --arg s_session "$s_session" --arg s_path "$SETTINGS" '
-      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
+      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(
           (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)) as $ra
@@ -921,7 +923,7 @@ cmd_list() {
           count: ($tasks | length),
           tasks: $tasks,
           enabled: ($tasks | map(select(.enabled)) | length),
-          failed: ($tasks | map(select(.last_run.status == "failure")) | length),
+          failed: ($tasks | map(select(.last_run.status == "failure" and .last_run.dismissed != true)) | length),
           running: ($tasks | map(select(.last_run.status == "running")) | length),
           backlog: ($tasks | map(select(.enabled and .backlog_since != null)) | length),
           next: (if $n == null then null else {task: $n.name, next_due: $n.next_due, next_due_text: $n.next_due_text} end)
@@ -1039,7 +1041,7 @@ retain_runs() {
 
 # Run a task end to end: worktree, claude -p invocation, worktree cleanup,
 # run-log entry. Shared by trigger / sweep / backlog run (trigger arg is
-# manual | scheduled | backlog-catchup). Prints "<run-id> <status>" on stdout
+# manual | scheduled | missed | backlog-catchup). Prints "<run-id> <status>" on stdout
 # and returns 0 on success, 1 on failure -- callers that care parse that line;
 # Claude's own output never reaches the CLI's stdout.
 run_task() {
@@ -1084,6 +1086,13 @@ run_task() {
 
   local log_file="$STATE_DIR/logs/${run_id}.out"
   (umask 077 && : >"$log_file")
+
+  # A missed run usually fires the moment the machine wakes, before the
+  # network, auth, and herdr are usable; give them time to settle.
+  if [[ $trigger == missed ]] && ((RESUME_DELAY > 0)); then
+    echo "omaroutines: missed run, waiting ${RESUME_DELAY}s for the system to settle" >>"$log_file"
+    sleep "$RESUME_DELAY"
+  fi
 
   # A run that never launches an agent: log the message, record the reason.
   fail_config() {
@@ -1299,9 +1308,11 @@ cmd_sweep() {
         --exec omaroutines backlog run "$name" >/dev/null 2>&1 || true
       echo "$name: backlog pending (notified)"
     else
+      local trig=scheduled
+      ((sweep_now - next_due > MISS_GRACE)) && trig=missed
       reschedule_from_now "$name" "$schedule"
-      launch_run "$name" scheduled
-      echo "$name: fired"
+      launch_run "$name" "$trig"
+      echo "$name: fired ($trig)"
     fi
   done <<<"$due"
 
@@ -1358,6 +1369,24 @@ cmd_backlog() {
   read -r run_id status <<<"$out"
   echo "run $run_id: $status ($(run_handle "$run_id"))"
   return "$rc"
+}
+
+# Acknowledge a task's failed latest run so it stops counting as failed.
+cmd_dismiss() {
+  local name="${1:-}"
+  [[ -z $name ]] && {
+    echo "omaroutines: dismiss requires a task name" >&2
+    return 1
+  }
+  ensure_store
+  require_task "$name"
+  lock
+  apply "$RUNS" --arg name "$name" '
+    ([.runs[] | select(.task == $name)] | max_by(.id) // {} | .id) as $last
+    | .runs |= map(if .id == $last and .status == "failure" then .dismissed = true else . end)
+  '
+  unlock
+  echo "$name: dismissed"
 }
 
 cmd_log() {
@@ -1642,6 +1671,7 @@ Usage:
   omaroutines trigger <name>          run now
   omaroutines sweep                   fire due tasks (called by the timer)
   omaroutines backlog run|skip <name> resolve a pending backlog notification
+  omaroutines dismiss <name>          clear a task's failed last run
   omaroutines log <name> [--json]     show a task's run history
   omaroutines resume <run-id> [--terminal]
                                        resume a past headless run's Claude session
@@ -1706,6 +1736,10 @@ sweep)
 backlog)
   shift
   cmd_backlog "$@"
+  ;;
+dismiss)
+  shift
+  cmd_dismiss "$@"
   ;;
 log)
   shift

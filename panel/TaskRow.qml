@@ -20,6 +20,7 @@ Item {
   readonly property var lastRun: task.last_run || null
   readonly property string lastStatus: lastRun ? String(lastRun.status) : ""
   readonly property bool running: lastStatus === "running"
+  readonly property bool failed: lastStatus === "failure" && lastRun.dismissed !== true
   readonly property bool enabled: task.enabled === true
   readonly property bool backlog: task.backlog_since !== null && task.backlog_since !== undefined
   readonly property bool expanded: panel.isExpanded(name)
@@ -84,7 +85,7 @@ Item {
     anchors.fill: parent
     radius: Style.cornerRadius
     color: row.expanded ? Util.alpha(row.fg, 0.06)
-         : row.lastStatus === "failure" || row.backlog ? Util.alpha(row.urgent, 0.10) : "transparent"
+         : row.failed || row.backlog ? Util.alpha(row.urgent, 0.10) : "transparent"
     border.width: row.expanded ? 1 : 0
     border.color: Util.alpha(row.fg, 0.15)
   }
@@ -146,7 +147,7 @@ Item {
         implicitWidth: chip.implicitWidth + Style.space(8)
         implicitHeight: chip.implicitHeight + Style.space(2)
         radius: height / 2
-        readonly property color tone: Format.statusColor(row.lastStatus, row.accent, row.urgent, row.muted)
+        readonly property color tone: Format.statusColor(row.failed || row.lastStatus !== "failure" ? row.lastStatus : "", row.accent, row.urgent, row.muted)
         color: Util.alpha(tone, 0.18)
         border.width: 1
         border.color: tone
@@ -171,6 +172,18 @@ Item {
             font.pixelSize: row.capSize
           }
         }
+      }
+
+      PanelActionButton {
+        visible: row.failed
+        iconText: "󰅖"
+        size: Style.space(16)
+        fontSize: row.capSize
+        foreground: row.muted
+        hoverColor: row.urgent
+        enabled: !row.anyBusy
+        tooltipText: "Dismiss this failure"
+        onClicked: row.act(["dismiss", row.name])
       }
 
       // kept (unmerged) worktrees awaiting review; pruned on panel open once merged
