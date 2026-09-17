@@ -26,7 +26,7 @@ Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
   → defaults + stderr warning, file never clobbered). Keys: `execution`
   (`headless`|`herdr`), `agent` (kind or null), `model` (claude model alias
   or id, or null), `herdr_session`, `herdr_retain`, `herdr_timeout_minutes`,
-  `herdr_launch_stagger_seconds`.
+  `herdr_launch_stagger_seconds`, `notify` (`all`|`failure`|`needs_input`|`none`).
 - `manifest.json` — Omarchy plugin manifest (`bar-widget` kind only; the panel
   is private to the widget, as in omagit/omaplug).
 - `BarWidget.qml` — bar icon + owner of the `list --json` poll (re-run on
@@ -284,6 +284,15 @@ finished) → `success`; agent gone or server down → `failure/exited`; the
 outcome gets a transcript snapshot and a fresh `end`. A failed `agent list`
 leaves it for the next sweep. `dismiss` clears it from the badge without
 closing it.
+
+### Notifications
+
+`finalize_run` sends a desktop notification (`$NOTIFY_BIN`) when a
+non-manual run ends as `failure` or `needs_input`, filtered by the `notify`
+setting (default `all`). Clicking runs `attach <id> --terminal` for herdr
+runs with a pane, `resume <id> --terminal` for headless runs, otherwise
+`show-overlay`. `needs_input` is sent `-u critical` so it stays up. A
+`needs_input` run that later settles notifies again only if it fails.
 
 ### Pane retention
 

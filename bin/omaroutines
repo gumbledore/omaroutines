@@ -1018,6 +1018,32 @@ finalize_run() {
     .runs |= map(if .id == $id then . + $patch + {end: $end} else . end)'
   retain_runs "$task"
   unlock
+  notify_run "$run_id" || true
+}
+
+# Desktop notification when an unattended run fails or waits on input
+# (setting `notify`: all | failure | needs_input | none). Manual triggers
+# are watched, so never notified. Click attaches / resumes the run.
+notify_run() {
+  local run_id="$1" task trig status pane sid want
+  IFS=$'\t' read -r task trig status pane sid < <(jq -r --argjson id "$run_id" '
+    .runs[] | select(.id == $id) | [.task, .trigger, .status, (.pane_id // ""), (.session_id // "")] | @tsv' "$RUNS")
+  [[ $trig != manual && ($status == failure || $status == needs_input) ]] || return 0
+  want=$(setting notify)
+  [[ $want == all || $want == "$status" ]] || return 0
+  local -a action=(omaroutines show-overlay)
+  if [[ -n $pane ]]; then
+    action=(omaroutines attach "$run_id" --terminal)
+  elif [[ -n $sid ]]; then
+    action=(omaroutines resume "$run_id" --terminal)
+  fi
+  if [[ $status == needs_input ]]; then
+    "$NOTIFY_BIN" -g "$GLYPH" -u critical "Omaroutines: $task needs input" \
+      "Run #$run_id is waiting on a prompt. Click to attach." --exec "${action[@]}" >/dev/null 2>&1
+  else
+    "$NOTIFY_BIN" -g "$GLYPH" -u normal "Omaroutines: $task failed" \
+      "Run #$run_id ($trig) failed. Click to open it." --exec "${action[@]}" >/dev/null 2>&1
+  fi
 }
 
 # Trim a task's runs to the newest RETAIN_RUNS (kept-worktree / live-pane
@@ -1653,6 +1679,13 @@ cmd_settings() {
     herdr_retain | herdr_timeout_minutes)
       [[ $value =~ ^[1-9][0-9]*$ ]] || { echo "omaroutines: $key must be a whole number >= 1" >&2; return 1; }
       json=$value
+      ;;
+    notify)
+      [[ " all failure needs_input none " == *" $value "* ]] || {
+        echo "omaroutines: notify must be one of: all failure needs_input none" >&2
+        return 1
+      }
+      json=$(jq -n --arg v "$value" '$v')
       ;;
     herdr_launch_stagger_seconds)
       [[ $value =~ ^[0-9]+$ ]] || { echo "omaroutines: $key must be a whole number >= 0" >&2; return 1; }

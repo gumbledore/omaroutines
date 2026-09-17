@@ -648,3 +648,55 @@ def test_needs_input_counts_in_badge_until_dismissed(herdr_cli, state_home, cwd_
     herdr_cli("dismiss", "t1")
     p = json.loads(herdr_cli("list", "--json").stdout)
     assert (p["needs_input"], p["badge"]) == (0, 0)
+
+
+# --- notifications ----------------------------------------------------------------
+
+
+def notifications(notify_log):
+    if not notify_log.exists():
+        return []
+    return [c.splitlines() for c in notify_log.read_text().split("---\n") if c.strip()]
+
+
+def test_scheduled_needs_input_notifies_with_attach(herdr_cli, state_home, cwd_dir, stub_dir, notify_log):
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("run", "t1", "scheduled")
+    [n] = notifications(notify_log)
+    assert "Omaroutines: t1 needs input" in n and "critical" in n
+    assert n[n.index("--exec") + 1:] == ["omaroutines", "attach", "1", "--terminal"]
+    # settling later to success sends nothing more
+    set_agent_status(stub_dir, "done")
+    herdr_cli("sweep")
+    assert len(notifications(notify_log)) == 1
+
+
+def test_scheduled_failure_notifies(herdr_cli, state_home, cwd_dir, stub_dir, notify_log):
+    (stub_dir / "prompt-outcome").write_text("working")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("run", "t1", "missed")
+    [n] = notifications(notify_log)
+    assert "Omaroutines: t1 failed" in n
+
+
+def test_manual_and_success_runs_not_notified(herdr_cli, state_home, cwd_dir, stub_dir, notify_log):
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("run", "t1", "scheduled")
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    herdr_cli("trigger", "t1")
+    assert notifications(notify_log) == []
+
+
+@pytest.mark.parametrize("setting,notified", [("none", 0), ("failure", 0), ("needs_input", 1), ("all", 1)])
+def test_notify_setting_filters(herdr_cli, state_home, cwd_dir, stub_dir, notify_log, setting, notified):
+    assert herdr_cli("settings", "set", "notify", setting).returncode == 0
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("run", "t1", "scheduled")
+    assert len(notifications(notify_log)) == notified
+
+
+def test_notify_setting_rejects_unknown(herdr_cli):
+    r = herdr_cli("settings", "set", "notify", "sometimes")
+    assert r.returncode != 0 and "notify must be one of" in r.stderr
