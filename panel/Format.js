@@ -22,7 +22,7 @@ function duration(start, end) {
 }
 
 function statusColor(status, accent, urgent, muted) {
-  if (status === "failure") return urgent
+  if (status === "failure" || status === "needs_input") return urgent
   if (status === "running") return accent
   return muted
 }

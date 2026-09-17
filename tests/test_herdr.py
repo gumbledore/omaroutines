@@ -208,7 +208,7 @@ def test_agent_name_collision_retries_with_suffix(herdr_cli, state_home, cwd_dir
 @pytest.mark.parametrize("outcome,status,reason", [
     ("done", "success", None),
     ("idle", "success", None),
-    ("blocked", "failure", "blocked"),
+    ("blocked", "needs_input", "blocked"),
     ("working", "failure", "timeout"),
     ("vanish", "failure", "exited"),
 ])
@@ -230,13 +230,13 @@ def test_settled_state_mapping(herdr_cli, state_home, cwd_dir, stub_dir, outcome
         assert run["pane_id"] is not None
 
 
-def test_blocked_at_startup_is_failure_blocked(herdr_cli, state_home, cwd_dir, stub_dir):
+def test_blocked_at_startup_needs_input(herdr_cli, state_home, cwd_dir, stub_dir):
     (stub_dir / "start-outcome").write_text("blocked")
     add_task(herdr_cli, "t1", cwd_dir, worktree="false")
     r = herdr_cli("trigger", "t1")
     assert r.returncode == 1
     run = runs_for(state_home, "t1")[0]
-    assert (run["status"], run["reason"]) == ("failure", "blocked")
+    assert (run["status"], run["reason"]) == ("needs_input", "blocked")
     assert run["pane_id"] is not None
     assert not any(l.startswith("herdr agent prompt") for l in herdr_calls(stub_dir))
 
@@ -588,3 +588,63 @@ def test_pane_without_tab_id_is_never_orphaned(herdr_cli, state_home, cwd_dir, s
 def test_settings_rejects_zero_retain(herdr_cli):
     assert herdr_cli("settings", "set", "herdr_retain", "0").returncode != 0
 
+
+
+# --- needs_input resolution -----------------------------------------------------
+
+
+def set_agent_status(stub_dir, status):
+    p = stub_dir / "agents.json"
+    p.write_text(json.dumps([dict(a, agent_status=status) for a in json.loads(p.read_text())]))
+
+
+@pytest.mark.parametrize("later,status,reason", [
+    ("blocked", "needs_input", "blocked"),
+    ("working", "needs_input", "blocked"),
+    ("idle", "success", None),
+    ("done", "success", None),
+])
+def test_sweep_settles_needs_input(herdr_cli, state_home, cwd_dir, stub_dir, later, status, reason):
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("trigger", "t1")
+    set_agent_status(stub_dir, later)
+    r = herdr_cli("sweep")
+    assert r.returncode == 0, r.stderr
+    run = runs_for(state_home, "t1")[0]
+    assert (run["status"], run["reason"]) == (status, reason)
+    if status == "success":
+        assert run["exit_code"] == 0
+        assert "t1: run 1 success" in r.stdout
+        assert "settled after waiting for input" in log_file(state_home, run).read_text()
+
+
+def test_sweep_fails_needs_input_when_agent_gone(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("trigger", "t1")
+    (stub_dir / "agents.json").write_text("[]")
+    herdr_cli("sweep")
+    run = runs_for(state_home, "t1")[0]
+    assert (run["status"], run["reason"], run["exit_code"]) == ("failure", "exited", 1)
+
+
+def test_sweep_leaves_needs_input_when_agent_query_fails(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("trigger", "t1")
+    (stub_dir / "list-fail").touch()
+    herdr_cli("sweep")
+    assert runs_for(state_home, "t1")[0]["status"] == "needs_input"
+
+
+def test_needs_input_counts_in_badge_until_dismissed(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("blocked")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("trigger", "t1")
+    p = json.loads(herdr_cli("list", "--json").stdout)
+    assert (p["needs_input"], p["failed"], p["badge"]) == (1, 0, 1)
+    assert "1 need input" in p["tooltip"]
+    herdr_cli("dismiss", "t1")
+    p = json.loads(herdr_cli("list", "--json").stdout)
+    assert (p["needs_input"], p["badge"]) == (0, 0)

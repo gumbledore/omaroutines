@@ -403,7 +403,7 @@ herdr_agent_state() {
 map_agent_state() {
   case "$1" in
   done | idle) echo "success|" ;;
-  blocked) echo "failure|blocked" ;;
+  blocked) echo "needs_input|blocked" ;;
   working) echo "failure|timeout" ;;
   *) echo "failure|exited" ;;
   esac
@@ -925,6 +925,7 @@ cmd_list() {
           enabled: ($tasks | map(select(.enabled)) | length),
           failed: ($tasks | map(select(.last_run.status == "failure" and .last_run.dismissed != true)) | length),
           running: ($tasks | map(select(.last_run.status == "running")) | length),
+          needs_input: ($tasks | map(select(.last_run.status == "needs_input" and .last_run.dismissed != true)) | length),
           backlog: ($tasks | map(select(.enabled and .backlog_since != null)) | length),
           next: (if $n == null then null else {task: $n.name, next_due: $n.next_due, next_due_text: $n.next_due_text} end)
         }
@@ -937,12 +938,13 @@ cmd_list() {
         }
       | .agent_kinds = $kinds
       | .model_choices = $models
-      | .badge = .failed + .backlog
+      | .badge = .failed + .needs_input + .backlog
       | .active = (.badge > 0)
       | .tooltip = (
           if .enabled == 0 then "No enabled tasks"
           else (if .next == null then "Next: none" else "Next: \(.next.task) \(.next.next_due_text)" end)
             + (if .failed > 0 then " · \(.failed) failed" else "" end)
+            + (if .needs_input > 0 then " · \(.needs_input) need input" else "" end)
             + (if .running > 0 then " · \(.running) running" else "" end)
             + (if .backlog > 0 then " · \(.backlog) backlog" else "" end)
           end)
@@ -1268,10 +1270,40 @@ reschedule_from_now() {
   unlock
 }
 
+# Settle herdr runs left waiting on the user (needs_input): once the agent
+# is done/idle (answered and finished) or gone, record the real outcome.
+# Still blocked or working: leave it. A failed agent query: try next sweep.
+resolve_waiting() {
+  local waiting agents_json='[]'
+  waiting=$(jq -r '.runs[] | select(.status == "needs_input") | [.id, .task, .agent_name] | @tsv' "$RUNS")
+  [[ -z $waiting ]] && return 0
+  cache_herdr_session
+  # server down: its panes, and so the waiting agents, are gone
+  if herdr_server_up; then
+    agents_json=$(hdq agent list 2>/dev/null | jq -ce '.result.agents') || return 0
+  fi
+  local id task agent state result st reason
+  while IFS=$'\t' read -r id task agent; do
+    state=$(jq -r --arg n "$agent" '[.[] | select(.name == $n)][0].agent_status // empty' <<<"$agents_json")
+    [[ $state == blocked || $state == working ]] && continue
+    result=$(map_agent_state "$state")
+    st=${result%%|*}
+    reason=${result#*|}
+    {
+      echo "omaroutines: settled after waiting for input (agent ${state:-gone})"
+      snapshot_transcript "$agent"
+    } >>"$STATE_DIR/logs/$id.out" 2>&1
+    finalize_run "$id" "$task" "$(jq -nc --arg st "$st" --arg r "$reason" '
+      {status: $st, reason: (if $r == "" then null else $r end), exit_code: (if $st == "success" then 0 else 1 end), dismissed: false}')"
+    echo "$task: run $id $st"
+  done <<<"$waiting"
+}
+
 cmd_sweep() {
   ensure_store
   local sweep_now
   sweep_now=$(now)
+  resolve_waiting || true
 
   local due
   due=$(jq -r --argjson now "$sweep_now" '
@@ -1371,7 +1403,7 @@ cmd_backlog() {
   return "$rc"
 }
 
-# Acknowledge a task's failed latest run so it stops counting as failed.
+# Acknowledge a task's failed / waiting latest run so it stops counting.
 cmd_dismiss() {
   local name="${1:-}"
   [[ -z $name ]] && {
@@ -1383,7 +1415,7 @@ cmd_dismiss() {
   lock
   apply "$RUNS" --arg name "$name" '
     ([.runs[] | select(.task == $name)] | max_by(.id) // {} | .id) as $last
-    | .runs |= map(if .id == $last and .status == "failure" then .dismissed = true else . end)
+    | .runs |= map(if .id == $last and (.status == "failure" or .status == "needs_input") then .dismissed = true else . end)
   '
   unlock
   echo "$name: dismissed"
@@ -1671,7 +1703,7 @@ Usage:
   omaroutines trigger <name>          run now
   omaroutines sweep                   fire due tasks (called by the timer)
   omaroutines backlog run|skip <name> resolve a pending backlog notification
-  omaroutines dismiss <name>          clear a task's failed last run
+  omaroutines dismiss <name>          clear a task's failed / needs-input last run
   omaroutines log <name> [--json]     show a task's run history
   omaroutines resume <run-id> [--terminal]
                                        resume a past headless run's Claude session

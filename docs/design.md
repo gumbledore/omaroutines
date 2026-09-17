@@ -96,7 +96,7 @@ migration.
   "trigger":"manual",               // manual | scheduled | missed | backlog-catchup
   "start":1756400000,
   "end":1756400300,                 // null while running
-  "status":"success",               // running | success | failure
+  "status":"success",               // running | success | failure | needs_input
   "exit_code":0,
   "session_id":"uuid",
   "permission_mode":"auto",
@@ -150,8 +150,8 @@ Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
 mutate state. `list --json` is the bar widget's whole data contract: each task
 gains `next_due_text` and `last_run` (`{id,status,trigger,start,end}` of its
 newest run, or null); top level carries `count`, `enabled`, `failed`,
-`running`, `backlog` (enabled tasks with a pending backlog), `badge`
-(= failed + backlog), `next` (earliest-due enabled non-manual task, or null),
+`needs_input`, `running`, `backlog` (enabled tasks with a pending backlog), `badge`
+(= failed + needs_input + backlog; dismissed runs count in neither), `next` (earliest-due enabled non-manual task, or null),
 `active` (= badge > 0) and a ready-made `tooltip` string. Disabled tasks count
 as failed/running but never as backlog/next. For the panel, `last_run` also
 carries `session_available` (the session transcript still exists), `backend`,
@@ -264,7 +264,7 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is
    task `herdr_timeout` → settings `herdr_timeout_minutes` (minutes; the
    `OMAROUTINES_HERDR_TIMEOUT` env override is seconds, for tests).
-5. Settle: `done`/`idle` → `success`; `blocked` → `failure/blocked`; still
+5. Settle: `done`/`idle` → `success`; `blocked` → `needs_input/blocked`; still
    `working` at timeout → `failure/timeout`; agent gone or `unknown` →
    `failure/exited`. The sweep never kills a pane.
 6. `agent read --source recent` is appended to `logs/<id>.out` (same 0600
@@ -274,6 +274,16 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
 
 `trigger`/`backlog run` print `run <id>: <status> (pane <id>)` for herdr runs
 and `(session <uuid>)` for headless ones.
+
+### Runs waiting on input
+
+A `needs_input` run stays open: its pane is kept (retention never closes a
+blocked agent) and every sweep checks it via `agent list` before firing due
+tasks. Still `blocked`/`working` → unchanged. `done`/`idle` (answered and
+finished) → `success`; agent gone or server down → `failure/exited`; the
+outcome gets a transcript snapshot and a fresh `end`. A failed `agent list`
+leaves it for the next sweep. `dismiss` clears it from the badge without
+closing it.
 
 ### Pane retention
 

@@ -20,7 +20,9 @@ Item {
   readonly property var lastRun: task.last_run || null
   readonly property string lastStatus: lastRun ? String(lastRun.status) : ""
   readonly property bool running: lastStatus === "running"
-  readonly property bool failed: lastStatus === "failure" && lastRun.dismissed !== true
+  readonly property bool dismissed: lastRun !== null && lastRun.dismissed === true
+  // failed or waiting on the user, and not dismissed
+  readonly property bool failed: (lastStatus === "failure" || lastStatus === "needs_input") && !dismissed
   readonly property bool enabled: task.enabled === true
   readonly property bool backlog: task.backlog_since !== null && task.backlog_since !== undefined
   readonly property bool expanded: panel.isExpanded(name)
@@ -154,7 +156,7 @@ Item {
           implicitWidth: chip.implicitWidth + Style.space(8)
           implicitHeight: chip.implicitHeight + Style.space(2)
           radius: height / 2
-          readonly property color tone: Format.statusColor(row.failed || row.lastStatus !== "failure" ? row.lastStatus : "", row.accent, row.urgent, row.muted)
+          readonly property color tone: Format.statusColor(row.dismissed ? "" : row.lastStatus, row.accent, row.urgent, row.muted)
           color: Util.alpha(tone, 0.18)
           border.width: 1
           border.color: tone
@@ -191,7 +193,7 @@ Item {
         foreground: row.muted
         hoverColor: row.urgent
         enabled: row.failed && !row.anyBusy
-        tooltipText: "Dismiss this failure"
+        tooltipText: row.lastStatus === "needs_input" ? "Dismiss (the run stays open)" : "Dismiss this failure"
         onClicked: row.act(["dismiss", row.name])
       }
 
