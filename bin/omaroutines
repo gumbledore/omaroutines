@@ -1378,6 +1378,16 @@ cmd_sweep() {
       if ((sweep_now - backlog_since >= BACKLOG_TIMEOUT)); then
         lock
         apply "$TASKS" --arg name "$name" '.tasks |= map(if .name == $name then .backlog_since = null else . end)'
+        # Leave a trace of the unanswered backlog; no agent, no notification.
+        apply "$RUNS" --arg task "$name" --argjson now "$sweep_now" '
+          .nextRunId as $id | .nextRunId = ($id + 1)
+          | .runs += [{
+              id: $id, task: $task, trigger: "missed", start: $now, end: $now,
+              status: "skipped", exit_code: null, session_id: null,
+              permission_mode: null, model: null, worktree_path: null, worktree_branch: null, cwd: null,
+              backend: null, reason: "backlog_timeout", pane_id: null, tab_id: null, workspace_id: null, agent_name: null
+            }]'
+        retain_runs "$name"
         unlock
         reschedule_from_now "$name" "$schedule"
         echo "$name: backlog skipped (no response)"

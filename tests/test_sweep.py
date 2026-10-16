@@ -138,7 +138,11 @@ def test_backlog_timeout_resolves_skip(cli, state_home, cwd_dir, notify_log):
     assert r.returncode == 0, r.stderr
     assert "t1: backlog skipped (no response)" in r.stdout
 
-    assert runs_for(state_home, "t1") == []
+    runs = runs_for(state_home, "t1")
+    assert len(runs) == 1
+    assert runs[0]["trigger"] == "missed" and runs[0]["status"] == "skipped"
+    assert runs[0]["reason"] == "backlog_timeout" and runs[0]["exit_code"] is None
+    assert runs[0]["start"] == runs[0]["end"] == T + 47 * 60
     task = task_by_name(state_home, "t1")
     assert task["backlog_since"] is None
     assert task["next_due"] > T + 47 * 60

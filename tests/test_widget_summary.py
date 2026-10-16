@@ -7,7 +7,7 @@ runs.json by hand.
 import json
 import time
 
-from test_sweep import SCHEDULE, T, add_task, sweep
+from test_sweep import SCHEDULE, T, add_task, notify_calls, sweep
 
 
 def listing(cli, now=None):
@@ -214,3 +214,17 @@ def test_missed_and_failed_dismiss_independently(cli, state_home, cwd_dir):
     cli("dismiss", "t1")
     p = listing(cli, now=T + 1500)
     assert p["failed"] == 0 and p["badge"] == 0
+
+
+def test_auto_skipped_backlog_counts_missed_until_dismissed(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    now = T + 47 * 60
+    p = listing(cli, now=now)
+    assert p["backlog"] == 0 and p["missed"] == 1
+    assert p["failed"] == 0 and p["badge"] == 0
+    assert len(notify_calls(notify_log)) == 1  # backlog notification only
+
+    cli("dismiss", "--missed", env_overrides={"OMAROUTINES_NOW": str(now)})
+    assert listing(cli, now=now)["missed"] == 0

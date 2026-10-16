@@ -96,7 +96,7 @@ migration.
   "trigger":"manual",               // manual | scheduled | missed | backlog-catchup
   "start":1756400000,
   "end":1756400300,                 // null while running
-  "status":"success",               // running | success | failure | needs_input
+  "status":"success",               // running | success | failure | needs_input | skipped
   "exit_code":0,
   "session_id":"uuid",
   "permission_mode":"auto",
@@ -366,7 +366,10 @@ For each enabled task with non-null `next_due <= now`:
   timeout default, or `omaroutines backlog skip <name>` explicitly.)
 - While `backlog_since` is set, the task is not re-notified. If
   `now - backlog_since >= BACKLOG_TIMEOUT` (default 900 s) a later sweep
-  resolves it as skip: clears `backlog_since`, recomputes `next_due` from now.
+  resolves it as skip: clears `backlog_since`, recomputes `next_due` from now, and
+  records a run `{trigger: missed, status: skipped, reason: backlog_timeout}` (no
+  agent, no notification) so it counts toward `missed` until dismissed. `backlog skip`
+  records nothing.
 - `backlog run` fires the task **once** (`trigger=backlog-catchup`), clears
   `backlog_since`, recomputes `next_due`. `backlog skip` only does the latter.
 
