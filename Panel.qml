@@ -201,6 +201,7 @@ Panel {
     root.armedRemove = ""
     if (root.opened) {
       root.refresh()
+      if (root.hostWidget && root.hostWidget.missed > 0) root.runAction(root.settingsKey, ["dismiss", "--missed"])
       if (!pruneProc.running) pruneProc.running = true
     }
   }

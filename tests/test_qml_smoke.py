@@ -37,7 +37,7 @@ PAYLOAD = {
          "backlog_since": None, "created": 1756400000, "next_due_text": "-",
          "agent": "codex", "agent_source": "task", "execution": "herdr", "last_run": None},
     ],
-    "enabled": 2, "failed": 2, "running": 0, "backlog": 0, "badge": 2, "active": True,
+    "enabled": 2, "failed": 2, "running": 0, "backlog": 0, "missed": 3, "badge": 2, "active": True,
     "next": {"task": "lint", "next_due": 1756716400, "next_due_text": "Mon 1 Sep 09:00"},
     "tooltip": "Next: lint Mon 1 Sep 09:00 · 2 failed",
     "settings": {"execution": "herdr", "agent": "claude", "agent_source": "omarchy", "model": "sonnet",
@@ -87,6 +87,8 @@ def test_widget_parses_contract_and_panel_compiles(tmp_path):
     assert "TASKS 3" in out
     assert "TOOLTIP Next: lint Mon 1 Sep 09:00" in out and "2 failed" in out  # console.log escapes "·"
     assert "BADGE 2" in out
+    assert "MISSED 3" in out
+    assert "WARN" not in out and "Binding loop" not in out, out
     assert "MODE herdr claude" in out
     assert "KINDS claude,codex" in out
     assert "MODEL sonnet sonnet,opus,fable,haiku" in out

@@ -22,6 +22,7 @@ BarWidget {
   // Parsed `list --json`.
   property var tasks: []
   property int badge: 0
+  property int missed: 0
   property int enabledCount: 0
   property string tooltip: "Omaroutines"
   property bool cliOk: false
@@ -52,6 +53,7 @@ BarWidget {
   function reset() {
     root.tasks = []
     root.badge = 0
+    root.missed = 0
     root.enabledCount = 0
     root.tooltip = "Omaroutines"
     root.cliOk = false
@@ -65,6 +67,7 @@ BarWidget {
     try { data = JSON.parse(String(raw || "{}")) } catch (e) { data = ({}) }
     root.tasks = Array.isArray(data.tasks) ? data.tasks : []
     root.badge = Number(data.badge || 0)
+    root.missed = Number(data.missed || 0)
     root.enabledCount = Number(data.enabled || 0)
     root.tooltip = String(data.tooltip || "Omaroutines")
     root.cliOk = Array.isArray(data.tasks)
@@ -146,6 +149,27 @@ BarWidget {
     onPressed: function (b) {
       if (b === Qt.LeftButton) root.togglePanel()
       else if (b === Qt.RightButton) root.refresh()
+    }
+
+    // Missed runs: accent pill, distinct from the urgent failure badge.
+    Rectangle {
+      visible: root.missed > 0
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.topMargin: Style.space(3)
+      width: Math.max(Style.space(11), missedText.implicitWidth + Style.space(4))
+      height: Style.space(11)
+      radius: height / 2
+      color: root.bar ? root.bar.accent : Color.accent
+      Text {
+        id: missedText
+        anchors.centerIn: parent
+        text: root.missed > 99 ? "99+" : String(root.missed)
+        color: Color.background
+        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+        font.pixelSize: Style.space(8)
+        font.bold: true
+      }
     }
   }
 }

@@ -94,6 +94,7 @@ ShellRoot {
       console.log("TASKS " + w.tasks.length)
       console.log("TOOLTIP " + w.tooltip)
       console.log("BADGE " + w.badge)
+      console.log("MISSED " + w.missed)
       console.log("MODE " + w.scheduleSettings.execution + " " + w.scheduleSettings.agent)
       console.log("KINDS " + w.agentKinds.join(","))
       console.log("MODEL " + w.scheduleSettings.model + " " + w.modelChoices.join(","))

@@ -934,7 +934,8 @@ cmd_list() {
       --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" --arg s_model "$s_model" \
       --argjson models "$(printf '%s\n' $MODEL_CHOICES | jq -R . | jq -sc .)" \
       --arg s_session "$s_session" --arg s_path "$SETTINGS" '
-      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
+      ($runs[0].runs | group_by(.task) | map(max_by(.id)) | map(select(.trigger == "missed" and .missed_seen != true)) | length) as $missed_runs
+      | ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(
           (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)) as $ra
@@ -968,7 +969,8 @@ cmd_list() {
         }
       | .agent_kinds = $kinds
       | .model_choices = $models
-      | .badge = .failed + .needs_input + .backlog
+      | .missed = $missed_runs + .backlog
+      | .badge = .failed + .needs_input
       | .active = (.badge > 0)
       | .tooltip = (
           if .enabled == 0 then "No enabled tasks"
@@ -1460,7 +1462,20 @@ cmd_backlog() {
 }
 
 # Acknowledge a task's failed / waiting latest run so it stops counting.
+# `--missed` (all tasks) marks late-run latest runs seen via missed_seen, a
+# separate flag so it never hides a failure.
 cmd_dismiss() {
+  if [[ ${1:-} == --missed ]]; then
+    ensure_store
+    lock
+    apply "$RUNS" '
+      ([.runs | group_by(.task)[] | max_by(.id) | select(.trigger == "missed") | .id]) as $ids
+      | .runs |= map(if (.id as $i | $ids | index($i)) != null then .missed_seen = true else . end)
+    '
+    unlock
+    echo "missed: acknowledged"
+    return
+  fi
   local name="${1:-}"
   [[ -z $name ]] && {
     echo "omaroutines: dismiss requires a task name" >&2
@@ -1767,6 +1782,7 @@ Usage:
   omaroutines sweep                   fire due tasks (called by the timer)
   omaroutines backlog run|skip <name> resolve a pending backlog notification
   omaroutines dismiss <name>          clear a task's failed / needs-input last run
+  omaroutines dismiss --missed        acknowledge every task's missed latest run
   omaroutines log <name> [--json]     show a task's run history
   omaroutines resume <run-id> [--terminal]
                                        resume a past headless run's Claude session

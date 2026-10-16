@@ -139,6 +139,7 @@ omaroutines trigger <name>              # run now (trigger=manual)
 omaroutines sweep                       # called by the timer
 omaroutines backlog run|skip <name>     # resolve a pending multi-miss backlog
 omaroutines dismiss <name>              # clear a failed last run (badge/tint)
+omaroutines dismiss --missed            # acknowledge all missed latest runs (sets run `missed_seen`; the panel calls it on open)
 omaroutines log <name> [--json]
 omaroutines resume <run-id> [--terminal]  # headless runs
 omaroutines attach <run-id> [--terminal]  # herdr runs
@@ -150,8 +151,9 @@ Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
 mutate state. `list --json` is the bar widget's whole data contract: each task
 gains `next_due_text` and `last_run` (`{id,status,trigger,start,end}` of its
 newest run, or null); top level carries `count`, `enabled`, `failed`,
-`needs_input`, `running`, `backlog` (enabled tasks with a pending backlog), `badge`
-(= failed + needs_input + backlog; dismissed runs count in neither), `next` (earliest-due enabled non-manual task, or null),
+`needs_input`, `running`, `backlog` (enabled tasks with a pending backlog), `missed`
+(tasks whose latest run has `trigger=missed` and no `missed_seen`, plus `backlog`), `badge`
+(= failed + needs_input; dismissed runs count in neither), `next` (earliest-due enabled non-manual task, or null),
 `active` (= badge > 0) and a ready-made `tooltip` string. Disabled tasks count
 as failed/running but never as backlog/next. For the panel, `last_run` also
 carries `session_available` (the session transcript still exists), `backend`,
