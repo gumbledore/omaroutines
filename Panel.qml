@@ -197,11 +197,18 @@ Panel {
   }
   Timer { id: pruneNoteTimer; interval: 5000; onTriggered: root.pruneNote = "" }
 
+  // Opening the panel is the acknowledgement for the bar's missed count.
+  Process {
+    id: ackMissedProc
+    command: [root.cliPath, "dismiss", "--missed"]
+    onExited: root.refresh()
+  }
+
   onOpenedChanged: {
     root.armedRemove = ""
     if (root.opened) {
       root.refresh()
-      if (root.hostWidget && root.hostWidget.missed > 0) root.runAction(root.settingsKey, ["dismiss", "--missed"])
+      if (root.hostWidget && root.hostWidget.missed > 0 && !ackMissedProc.running) ackMissedProc.running = true
       if (!pruneProc.running) pruneProc.running = true
     }
   }

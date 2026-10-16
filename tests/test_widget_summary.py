@@ -228,3 +228,22 @@ def test_auto_skipped_backlog_counts_missed_until_dismissed(cli, state_home, cwd
 
     cli("dismiss", "--missed", env_overrides={"OMAROUTINES_NOW": str(now)})
     assert listing(cli, now=now)["missed"] == 0
+
+
+def test_auto_skipped_backlog_does_not_hide_earlier_failure(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    cli("trigger", "t1", env_overrides={"FAKE_CLAUDE_EXIT": "2"})
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    p = listing(cli, now=T + 47 * 60)
+    assert p["missed"] == 1 and p["failed"] == 1
+    assert task(p, "t1")["last_run"]["status"] == "failure"
+
+
+def test_removed_task_missed_run_not_counted(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    assert listing(cli, now=T + 47 * 60)["missed"] == 1
+    cli("remove", "t1")
+    assert listing(cli, now=T + 47 * 60)["missed"] == 0

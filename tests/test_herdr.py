@@ -271,6 +271,16 @@ def test_stall_with_pasted_prompt_recovers_with_enter(herdr_cli, state_home, cwd
     assert "recovery: Enter" in log_file(state_home, run).read_text()
 
 
+def test_stall_with_collapsed_paste_recovers_with_enter(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("stall-enter")
+    (stub_dir / "paste-collapsed").write_text("")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    assert run["status"] == "success"
+    assert len(prompt_calls(stub_dir)) == 1
+
+
 def test_stall_with_lost_prompt_resubmits_once(herdr_cli, state_home, cwd_dir, stub_dir):
     (stub_dir / "prompt-outcome").write_text("stall-resubmit")
     add_task(herdr_cli, "t1", cwd_dir, worktree="false")

@@ -435,13 +435,14 @@ herdr_throttle() {
 # (working/blocked/done); the settled `agent wait` JSON lands in HERDR_RECOVER_OUT
 # (empty on a wait timeout, so the caller's live state lookup reports it).
 herdr_recover_stall() {
-  local agent="$1" prompt="$2" remaining="$3" pane head
+  local agent="$1" prompt="$2" remaining="$3" pane needle
   HERDR_RECOVER_OUT=""
   ((remaining > 0)) || return 1
   pane=$(hdq agent read "$agent" --source recent --format text 2>/dev/null) || pane=""
-  head=$(head -n1 <<<"$prompt")
-  head=${head:0:40}
-  if [[ -n $head && $pane == *"$head"* ]]; then
+  needle=$(head -n1 <<<"$prompt")
+  needle=${needle:0:40}
+  # Claude may collapse a long paste to "[Pasted text #N ...]" in the input box
+  if [[ (-n $needle && $pane == *"$needle"*) || $pane == *"[Pasted text"* ]]; then
     echo "omaroutines: stalled prompt sits in the input box; recovery: Enter"
     hdm agent send-keys "$agent" enter >/dev/null 2>&1 || return 1
   else
@@ -934,8 +935,10 @@ cmd_list() {
       --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" --arg s_model "$s_model" \
       --argjson models "$(printf '%s\n' $MODEL_CHOICES | jq -R . | jq -sc .)" \
       --arg s_session "$s_session" --arg s_path "$SETTINGS" '
-      ($runs[0].runs | group_by(.task) | map(max_by(.id)) | map(select(.trigger == "missed" and .missed_seen != true)) | length) as $missed_runs
-      | ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
+      (.tasks | map(.name)) as $names
+      | ($runs[0].runs | group_by(.task) | map(max_by(.id)) | map(select(.trigger == "missed" and .missed_seen != true and (.task as $t | $names | index($t)) != null)) | length) as $missed_runs
+      # skipped (backlog timeout) runs never become last_run: they must not hide a failure
+      | ($runs[0].runs | map(select(.status != "skipped")) | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(
           (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)) as $ra

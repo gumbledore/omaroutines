@@ -63,7 +63,7 @@ case "$1 $2" in
     outcome=$(cat "$STUB_DIR/prompt-outcome" 2>/dev/null || echo done)
     if [[ $outcome == stall-* ]]; then
       if [[ " ${*:5} " == *" --wait "* ]]; then
-        [[ $outcome == stall-enter ]] && printf '%s\n' "$text" >"$STUB_DIR/input-box.$name"
+        if [[ $outcome == stall-enter ]]; then [[ -f $STUB_DIR/paste-collapsed ]] && text="[Pasted text #1 +5 lines]"; printf '%s\n' "$text" >"$STUB_DIR/input-box.$name"; fi
         echo '{"error":{"code":"agent_prompt_stalled","message":"agent prompt produced no observed state change within 5000 ms; status is idle and state_change_seq remained 1"}}' >&2; exit 1
       fi
       [[ $outcome == stall-resubmit ]] && save "$agents" "map(if .name==\"$name\" then .agent_status=\"working\" else . end)"
