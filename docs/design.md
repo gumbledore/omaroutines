@@ -264,6 +264,13 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is
    task `herdr_timeout` → settings `herdr_timeout_minutes` (minutes; the
    `OMAROUTINES_HERDR_TIMEOUT` env override is seconds, for tests).
+   `agent_prompt_stalled` (agent still booting) gets one recovery: `agent read`;
+   if the prompt's first 40 chars sit in the input box, `agent send-keys
+   enter`, else `agent prompt` again (no `--wait`). Then `agent wait --until
+   working --until blocked` (30 s) confirms it registered, and `agent wait
+   --until idle --until done --until blocked` settles it within the remaining
+   run timeout. Never registering ends `failure/stalled`; the log notes
+   `recovery: Enter|resubmit`.
 5. Settle: `done`/`idle` → `success`; `blocked` → `needs_input/blocked`; still
    `working` at timeout → `failure/timeout`; agent gone or `unknown` →
    `failure/exited`. The sweep never kills a pane.

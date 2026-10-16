@@ -430,6 +430,33 @@ herdr_throttle() {
   exec 8>&-
 }
 
+# One recovery for a stalled prompt: Enter if the prompt text sits unsubmitted
+# in the input box, else resubmit. Succeeds once the prompt registered
+# (working/blocked/done); the settled `agent wait` JSON lands in HERDR_RECOVER_OUT
+# (empty on a wait timeout, so the caller's live state lookup reports it).
+herdr_recover_stall() {
+  local agent="$1" prompt="$2" remaining="$3" pane head
+  HERDR_RECOVER_OUT=""
+  ((remaining > 0)) || return 1
+  pane=$(hdq agent read "$agent" --source recent --format text 2>/dev/null) || pane=""
+  head=$(head -n1 <<<"$prompt")
+  head=${head:0:40}
+  if [[ -n $head && $pane == *"$head"* ]]; then
+    echo "omaroutines: stalled prompt sits in the input box; recovery: Enter"
+    hdm agent send-keys "$agent" enter >/dev/null 2>&1 || return 1
+  else
+    echo "omaroutines: stalled prompt was lost; recovery: resubmit"
+    hdm agent prompt "$agent" "$prompt" >/dev/null 2>&1 || return 1
+  fi
+  # Confirm registration first: idle is also a finished agent's state, so
+  # waiting on idle alone would "succeed" instantly.
+  timeout 40 "$HERDR_BIN_WRAP" _herdr agent wait "$agent" --until working --until blocked --until done --timeout 30000 >/dev/null 2>&1 || return 1
+  remaining=$((remaining - 30))
+  ((remaining > 0)) || remaining=1
+  HERDR_RECOVER_OUT=$(timeout "$((remaining + 60))" "$HERDR_BIN_WRAP" _herdr agent wait "$agent" --until idle --until done --until blocked --timeout "$((remaining * 1000))" 2>&1) || HERDR_RECOVER_OUT=""
+  return 0
+}
+
 # Run one task under herdr: workspace by cwd label, new unfocused tab, agent
 # start with unattended flags, prompt --wait, settle -> status/reason,
 # transcript snapshot. Sets HERDR_RESULT="status|reason", HERDR_PANE,
@@ -487,16 +514,19 @@ herdr_run() {
     fi
   fi
 
+  local t0=$SECONDS
   out=$(timeout "$((timeout_s + 60))" "$HERDR_BIN_WRAP" _herdr agent prompt "$agent" "$prompt" --wait --timeout "$((timeout_s * 1000))" 2>&1) || true
   if [[ $(jq -r '.error.code // empty' <<<"$out" 2>/dev/null) == agent_prompt_stalled ]]; then
-    # herdr never observed the pane register the prompt at all -- the agent
-    # is left "idle" exactly as it would be after finishing normally, so
-    # falling back to a live state query (as below) is indistinguishable from
-    # success. Report it as the stall it is instead of guessing.
+    # herdr never saw the pane register the prompt (agent still booting). The
+    # agent sits "idle" exactly as after a normal finish, so a live state
+    # query can't tell; recover once, else report the stall.
     echo "omaroutines: herdr agent prompt: $out"
-    HERDR_RESULT="failure|stalled"
-    snapshot_transcript "$agent"
-    return 0
+    if ! herdr_recover_stall "$agent" "$prompt" "$((timeout_s - (SECONDS - t0)))"; then
+      HERDR_RESULT="failure|stalled"
+      snapshot_transcript "$agent"
+      return 0
+    fi
+    out=$HERDR_RECOVER_OUT
   fi
   state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
   if [[ -z $state ]]; then

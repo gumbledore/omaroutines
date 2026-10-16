@@ -255,6 +255,43 @@ def test_stalled_prompt_is_failure_not_success(herdr_cli, state_home, cwd_dir, s
     assert agents(stub_dir)[0]["agent_status"] == "idle"
 
 
+def prompt_calls(stub_dir):
+    return [l for l in herdr_calls(stub_dir) if l.startswith("herdr agent prompt")]
+
+
+def test_stall_with_pasted_prompt_recovers_with_enter(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("stall-enter")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    r = herdr_cli("trigger", "t1")
+    assert r.returncode == 0, r.stdout
+    run = runs_for(state_home, "t1")[0]
+    assert run["status"] == "success"
+    assert any(l.startswith("herdr agent send-keys t1-1 enter") for l in herdr_calls(stub_dir))
+    assert len(prompt_calls(stub_dir)) == 1
+    assert "recovery: Enter" in log_file(state_home, run).read_text()
+
+
+def test_stall_with_lost_prompt_resubmits_once(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("stall-resubmit")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    r = herdr_cli("trigger", "t1")
+    assert r.returncode == 0, r.stdout
+    run = runs_for(state_home, "t1")[0]
+    assert run["status"] == "success"
+    assert len(prompt_calls(stub_dir)) == 2
+    assert "recovery: resubmit" in log_file(state_home, run).read_text()
+
+
+def test_permanent_stall_attempts_one_recovery_then_fails(herdr_cli, state_home, cwd_dir, stub_dir):
+    (stub_dir / "prompt-outcome").write_text("stalled")
+    add_task(herdr_cli, "t1", cwd_dir, worktree="false")
+    herdr_cli("trigger", "t1")
+    run = runs_for(state_home, "t1")[0]
+    assert (run["status"], run["reason"]) == ("failure", "stalled")
+    assert len(prompt_calls(stub_dir)) == 2
+    assert "recovery: resubmit" in log_file(state_home, run).read_text()
+
+
 def test_timeout_comes_from_task_then_settings(herdr_cli, state_home, cwd_dir, stub_dir):
     add_task(herdr_cli, "t1", cwd_dir, worktree="false")
     herdr_cli("trigger", "t1")
