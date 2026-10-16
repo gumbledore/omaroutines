@@ -96,6 +96,7 @@ def test_widget_parses_contract_and_panel_compiles(tmp_path):
     assert "TASKROW lint herdr=false blocked=false canResume=true tip=Resume run #3 in a terminal" in out
     assert "RUNROW lint herdr=false blocked=false canResume=true" in out
     assert "TASKROW manual-one herdr=false blocked=false canResume=false tip=No run yet" in out
+    assert "TypeError" not in out, out  # run rows must survive `row` going null
     assert r.returncode == 0
 
 
