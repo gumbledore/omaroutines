@@ -96,7 +96,7 @@ migration.
   "trigger":"manual",               // manual | scheduled | missed | backlog-catchup
   "start":1756400000,
   "end":1756400300,                 // null while running
-  "status":"success",               // running | success | failure | needs_input
+  "status":"success",               // running | success | failure | needs_input | skipped
   "exit_code":0,
   "session_id":"uuid",
   "permission_mode":"auto",
@@ -139,6 +139,7 @@ omaroutines trigger <name>              # run now (trigger=manual)
 omaroutines sweep                       # called by the timer
 omaroutines backlog run|skip <name>     # resolve a pending multi-miss backlog
 omaroutines dismiss <name>              # clear a failed last run (badge/tint)
+omaroutines dismiss --missed            # acknowledge all missed latest runs (sets run `missed_seen`; the panel calls it on open)
 omaroutines log <name> [--json]
 omaroutines resume <run-id> [--terminal]  # headless runs
 omaroutines attach <run-id> [--terminal]  # herdr runs
@@ -150,8 +151,9 @@ Default `--schedule` is `manual`. Errors go to stderr, non-zero exit, and never
 mutate state. `list --json` is the bar widget's whole data contract: each task
 gains `next_due_text` and `last_run` (`{id,status,trigger,start,end}` of its
 newest run, or null); top level carries `count`, `enabled`, `failed`,
-`needs_input`, `running`, `backlog` (enabled tasks with a pending backlog), `badge`
-(= failed + needs_input + backlog; dismissed runs count in neither), `next` (earliest-due enabled non-manual task, or null),
+`needs_input`, `running`, `backlog` (enabled tasks with a pending backlog), `missed`
+(tasks whose latest run has `trigger=missed` and no `missed_seen`, plus `backlog`), `badge`
+(= failed + needs_input; dismissed runs count in neither), `next` (earliest-due enabled non-manual task, or null),
 `active` (= badge > 0) and a ready-made `tooltip` string. Disabled tasks count
 as failed/running but never as backlog/next. For the panel, `last_run` also
 carries `session_available` (the session transcript still exists), `backend`,
@@ -264,6 +266,13 @@ ends in `finalize_run` (the sweep's `run` entry has no `||` guard).
 4. `agent prompt <name> "<prompt>" --wait --timeout <ms>` where the timeout is
    task `herdr_timeout` → settings `herdr_timeout_minutes` (minutes; the
    `OMAROUTINES_HERDR_TIMEOUT` env override is seconds, for tests).
+   `agent_prompt_stalled` (agent still booting) gets one recovery: `agent read`;
+   if the prompt's first 40 chars sit in the input box, `agent send-keys
+   enter`, else `agent prompt` again (no `--wait`). Then `agent wait --until
+   working --until blocked` (30 s) confirms it registered, and `agent wait
+   --until idle --until done --until blocked` settles it within the remaining
+   run timeout. Never registering ends `failure/stalled`; the log notes
+   `recovery: Enter|resubmit`.
 5. Settle: `done`/`idle` → `success`; `blocked` → `needs_input/blocked`; still
    `working` at timeout → `failure/timeout`; agent gone or `unknown` →
    `failure/exited`. The sweep never kills a pane.
@@ -357,7 +366,10 @@ For each enabled task with non-null `next_due <= now`:
   timeout default, or `omaroutines backlog skip <name>` explicitly.)
 - While `backlog_since` is set, the task is not re-notified. If
   `now - backlog_since >= BACKLOG_TIMEOUT` (default 900 s) a later sweep
-  resolves it as skip: clears `backlog_since`, recomputes `next_due` from now.
+  resolves it as skip: clears `backlog_since`, recomputes `next_due` from now, and
+  records a run `{trigger: missed, status: skipped, reason: backlog_timeout}` (no
+  agent, no notification) so it counts toward `missed` until dismissed. `backlog skip`
+  records nothing.
 - `backlog run` fires the task **once** (`trigger=backlog-catchup`), clears
   `backlog_since`, recomputes `next_due`. `backlog skip` only does the latter.
 

@@ -430,6 +430,34 @@ herdr_throttle() {
   exec 8>&-
 }
 
+# One recovery for a stalled prompt: Enter if the prompt text sits unsubmitted
+# in the input box, else resubmit. Succeeds once the prompt registered
+# (working/blocked/done); the settled `agent wait` JSON lands in HERDR_RECOVER_OUT
+# (empty on a wait timeout, so the caller's live state lookup reports it).
+herdr_recover_stall() {
+  local agent="$1" prompt="$2" remaining="$3" pane needle
+  HERDR_RECOVER_OUT=""
+  ((remaining > 0)) || return 1
+  pane=$(hdq agent read "$agent" --source recent --format text 2>/dev/null) || pane=""
+  needle=$(head -n1 <<<"$prompt")
+  needle=${needle:0:40}
+  # Claude may collapse a long paste to "[Pasted text #N ...]" in the input box
+  if [[ (-n $needle && $pane == *"$needle"*) || $pane == *"[Pasted text"* ]]; then
+    echo "omaroutines: stalled prompt sits in the input box; recovery: Enter"
+    hdm agent send-keys "$agent" enter >/dev/null 2>&1 || return 1
+  else
+    echo "omaroutines: stalled prompt was lost; recovery: resubmit"
+    hdm agent prompt "$agent" "$prompt" >/dev/null 2>&1 || return 1
+  fi
+  # Confirm registration first: idle is also a finished agent's state, so
+  # waiting on idle alone would "succeed" instantly.
+  timeout 40 "$HERDR_BIN_WRAP" _herdr agent wait "$agent" --until working --until blocked --until done --timeout 30000 >/dev/null 2>&1 || return 1
+  remaining=$((remaining - 30))
+  ((remaining > 0)) || remaining=1
+  HERDR_RECOVER_OUT=$(timeout "$((remaining + 60))" "$HERDR_BIN_WRAP" _herdr agent wait "$agent" --until idle --until done --until blocked --timeout "$((remaining * 1000))" 2>&1) || HERDR_RECOVER_OUT=""
+  return 0
+}
+
 # Run one task under herdr: workspace by cwd label, new unfocused tab, agent
 # start with unattended flags, prompt --wait, settle -> status/reason,
 # transcript snapshot. Sets HERDR_RESULT="status|reason", HERDR_PANE,
@@ -487,16 +515,19 @@ herdr_run() {
     fi
   fi
 
+  local t0=$SECONDS
   out=$(timeout "$((timeout_s + 60))" "$HERDR_BIN_WRAP" _herdr agent prompt "$agent" "$prompt" --wait --timeout "$((timeout_s * 1000))" 2>&1) || true
   if [[ $(jq -r '.error.code // empty' <<<"$out" 2>/dev/null) == agent_prompt_stalled ]]; then
-    # herdr never observed the pane register the prompt at all -- the agent
-    # is left "idle" exactly as it would be after finishing normally, so
-    # falling back to a live state query (as below) is indistinguishable from
-    # success. Report it as the stall it is instead of guessing.
+    # herdr never saw the pane register the prompt (agent still booting). The
+    # agent sits "idle" exactly as after a normal finish, so a live state
+    # query can't tell; recover once, else report the stall.
     echo "omaroutines: herdr agent prompt: $out"
-    HERDR_RESULT="failure|stalled"
-    snapshot_transcript "$agent"
-    return 0
+    if ! herdr_recover_stall "$agent" "$prompt" "$((timeout_s - (SECONDS - t0)))"; then
+      HERDR_RESULT="failure|stalled"
+      snapshot_transcript "$agent"
+      return 0
+    fi
+    out=$HERDR_RECOVER_OUT
   fi
   state=$(jq -r '.result.agent.agent_status // empty' <<<"$out" 2>/dev/null) || state=""
   if [[ -z $state ]]; then
@@ -904,7 +935,10 @@ cmd_list() {
       --arg s_agent "$s_agent" --arg s_exec "$s_exec" --arg o_agent "$o_agent" --arg s_model "$s_model" \
       --argjson models "$(printf '%s\n' $MODEL_CHOICES | jq -R . | jq -sc .)" \
       --arg s_session "$s_session" --arg s_path "$SETTINGS" '
-      ($runs[0].runs | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
+      (.tasks | map(.name)) as $names
+      | ($runs[0].runs | group_by(.task) | map(max_by(.id)) | map(select(.trigger == "missed" and .missed_seen != true and (.task as $t | $names | index($t)) != null)) | length) as $missed_runs
+      # skipped (backlog timeout) runs never become last_run: they must not hide a failure
+      | ($runs[0].runs | map(select(.status != "skipped")) | group_by(.task) | map({key: .[0].task, value: (max_by(.id) | {id, status, trigger, start, end, backend: (.backend // "headless"), reason: (.reason // null), dismissed: (.dismissed // false), pane_id: (.pane_id // null), session_available: (.session_id as $s | $avail | index($s) != null), pane_available: (.pane_id as $p | $p != null and ($panes | index($p)) != null)})}) | from_entries) as $last
       | ($runs[0].runs | map(select(.worktree_path != null)) | group_by(.task) | map({key: .[0].task, value: length}) | from_entries) as $wts
       | (.tasks | map(
           (.agent // (if $s_agent != "" then $s_agent elif $o_agent != "" then $o_agent else null end)) as $ra
@@ -938,7 +972,8 @@ cmd_list() {
         }
       | .agent_kinds = $kinds
       | .model_choices = $models
-      | .badge = .failed + .needs_input + .backlog
+      | .missed = $missed_runs + .backlog
+      | .badge = .failed + .needs_input
       | .active = (.badge > 0)
       | .tooltip = (
           if .enabled == 0 then "No enabled tasks"
@@ -1346,6 +1381,16 @@ cmd_sweep() {
       if ((sweep_now - backlog_since >= BACKLOG_TIMEOUT)); then
         lock
         apply "$TASKS" --arg name "$name" '.tasks |= map(if .name == $name then .backlog_since = null else . end)'
+        # Leave a trace of the unanswered backlog; no agent, no notification.
+        apply "$RUNS" --arg task "$name" --argjson now "$sweep_now" '
+          .nextRunId as $id | .nextRunId = ($id + 1)
+          | .runs += [{
+              id: $id, task: $task, trigger: "missed", start: $now, end: $now,
+              status: "skipped", exit_code: null, session_id: null,
+              permission_mode: null, model: null, worktree_path: null, worktree_branch: null, cwd: null,
+              backend: null, reason: "backlog_timeout", pane_id: null, tab_id: null, workspace_id: null, agent_name: null
+            }]'
+        retain_runs "$name"
         unlock
         reschedule_from_now "$name" "$schedule"
         echo "$name: backlog skipped (no response)"
@@ -1430,7 +1475,20 @@ cmd_backlog() {
 }
 
 # Acknowledge a task's failed / waiting latest run so it stops counting.
+# `--missed` (all tasks) marks late-run latest runs seen via missed_seen, a
+# separate flag so it never hides a failure.
 cmd_dismiss() {
+  if [[ ${1:-} == --missed ]]; then
+    ensure_store
+    lock
+    apply "$RUNS" '
+      ([.runs | group_by(.task)[] | max_by(.id) | select(.trigger == "missed") | .id]) as $ids
+      | .runs |= map(if (.id as $i | $ids | index($i)) != null then .missed_seen = true else . end)
+    '
+    unlock
+    echo "missed: acknowledged"
+    return
+  fi
   local name="${1:-}"
   [[ -z $name ]] && {
     echo "omaroutines: dismiss requires a task name" >&2
@@ -1737,6 +1795,7 @@ Usage:
   omaroutines sweep                   fire due tasks (called by the timer)
   omaroutines backlog run|skip <name> resolve a pending backlog notification
   omaroutines dismiss <name>          clear a task's failed / needs-input last run
+  omaroutines dismiss --missed        acknowledge every task's missed latest run
   omaroutines log <name> [--json]     show a task's run history
   omaroutines resume <run-id> [--terminal]
                                        resume a past headless run's Claude session

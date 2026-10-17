@@ -7,7 +7,7 @@ runs.json by hand.
 import json
 import time
 
-from test_sweep import SCHEDULE, T, add_task, sweep
+from test_sweep import SCHEDULE, T, add_task, notify_calls, sweep
 
 
 def listing(cli, now=None):
@@ -113,13 +113,14 @@ def test_backlog_counted_and_cleared_by_skip(cli, state_home, cwd_dir):
     sweep(cli, T + 46 * 60)
     p = listing(cli, now=T + 46 * 60)
     assert p["backlog"] == 1
-    assert p["badge"] == 1
-    assert p["active"] is True
+    assert p["missed"] == 1
+    assert p["badge"] == 0
+    assert p["active"] is False
     assert p["tooltip"].endswith(" · 1 backlog")
 
     cli("backlog", "skip", "t1", env_overrides={"OMAROUTINES_NOW": str(T + 46 * 60)})
     p = listing(cli, now=T + 46 * 60)
-    assert p["backlog"] == 0 and p["badge"] == 0 and p["active"] is False
+    assert p["backlog"] == 0 and p["missed"] == 0 and p["badge"] == 0 and p["active"] is False
 
 
 def test_disabled_failed_task_counts_failed_but_not_backlog_or_next(cli, state_home, cwd_dir):
@@ -130,7 +131,7 @@ def test_disabled_failed_task_counts_failed_but_not_backlog_or_next(cli, state_h
     p = listing(cli, now=T + 46 * 60)
     assert p["enabled"] == 0
     assert p["failed"] == 1
-    assert p["backlog"] == 0
+    assert p["backlog"] == 0 and p["missed"] == 0
     assert p["next"] is None
     assert p["badge"] == 1 and p["active"] is True
     assert p["tooltip"] == "No enabled tasks"
@@ -167,8 +168,82 @@ def test_tooltip_all_segments(cli, state_home, cwd_dir):
     p = wait_for(lambda: listing(cli, now=T + 46 * 60), lambda p: p["running"] == 1)
     assert p["tooltip"].startswith("Next: ")
     assert p["tooltip"].endswith(" · 1 failed · 1 running · 1 backlog")
-    assert p["badge"] == 2
+    assert p["badge"] == 1 and p["missed"] == 1  # backlog moved out of badge
 
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and listing(cli)["running"]:
         time.sleep(0.2)
+
+
+def late_miss(cli, name="t1", now=T + 1500, **env):
+    return sweep(cli, now, OMAROUTINES_SWEEP_WAIT="1", OMAROUTINES_RESUME_DELAY="0", **env)
+
+
+def test_late_single_miss_counts_as_missed_not_failure(cli, state_home, cwd_dir):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    late_miss(cli)
+    p = wait_for(lambda: listing(cli, now=T + 1500), lambda p: task(p, "t1")["last_run"] is not None)
+    assert p["missed"] == 1
+    assert p["badge"] == 0 and p["failed"] == 0
+
+
+def test_dismiss_missed_clears_until_next_missed_run(cli, state_home, cwd_dir):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    late_miss(cli)
+    wait_for(lambda: listing(cli, now=T + 1500), lambda p: p["running"] == 0 and p["missed"] == 1)
+    r = cli("dismiss", "--missed")
+    assert r.returncode == 0, r.stderr
+    assert listing(cli, now=T + 1500)["missed"] == 0
+
+    # next occurrence is at T+1800; waking at T+2400 is another late single miss
+    late_miss(cli, now=T + 2400)
+    p = wait_for(lambda: listing(cli, now=T + 2400), lambda p: task(p, "t1")["last_run"]["id"] == 2 and p["running"] == 0)
+    assert p["missed"] == 1
+
+
+def test_missed_and_failed_dismiss_independently(cli, state_home, cwd_dir):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    late_miss(cli, FAKE_CLAUDE_EXIT="1")
+    p = wait_for(lambda: listing(cli, now=T + 1500), lambda p: p["failed"] == 1)
+    assert p["missed"] == 1 and p["failed"] == 1 and p["badge"] == 1
+
+    cli("dismiss", "--missed")
+    p = listing(cli, now=T + 1500)
+    assert p["missed"] == 0 and p["failed"] == 1 and p["badge"] == 1
+
+    cli("dismiss", "t1")
+    p = listing(cli, now=T + 1500)
+    assert p["failed"] == 0 and p["badge"] == 0
+
+
+def test_auto_skipped_backlog_counts_missed_until_dismissed(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    now = T + 47 * 60
+    p = listing(cli, now=now)
+    assert p["backlog"] == 0 and p["missed"] == 1
+    assert p["failed"] == 0 and p["badge"] == 0
+    assert len(notify_calls(notify_log)) == 1  # backlog notification only
+
+    cli("dismiss", "--missed", env_overrides={"OMAROUTINES_NOW": str(now)})
+    assert listing(cli, now=now)["missed"] == 0
+
+
+def test_auto_skipped_backlog_does_not_hide_earlier_failure(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    cli("trigger", "t1", env_overrides={"FAKE_CLAUDE_EXIT": "2"})
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    p = listing(cli, now=T + 47 * 60)
+    assert p["missed"] == 1 and p["failed"] == 1
+    assert task(p, "t1")["last_run"]["status"] == "failure"
+
+
+def test_removed_task_missed_run_not_counted(cli, state_home, cwd_dir, notify_log):
+    add_task(cli, "t1", cwd_dir, schedule=SCHEDULE, worktree="false")
+    sweep(cli, T + 46 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    sweep(cli, T + 47 * 60, OMAROUTINES_BACKLOG_TIMEOUT="60")
+    assert listing(cli, now=T + 47 * 60)["missed"] == 1
+    cli("remove", "t1")
+    assert listing(cli, now=T + 47 * 60)["missed"] == 0

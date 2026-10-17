@@ -68,6 +68,8 @@ ShellRoot {
         var r = rc.createObject(holder, { row: t, run: tasks[i].last_run })
         if (!r) { console.log("ROW ERROR RunRow " + tasks[i].name + ": " + rc.errorString()); return false }
         console.log("RUNROW " + t.name + " herdr=" + r.herdr + " blocked=" + r.blocked + " canResume=" + r.canResume)
+        // A model refresh can null `row` while run rows still live; their bindings must tolerate it.
+        r.row = null
       }
     }
     return true
@@ -92,6 +94,7 @@ ShellRoot {
       console.log("TASKS " + w.tasks.length)
       console.log("TOOLTIP " + w.tooltip)
       console.log("BADGE " + w.badge)
+      console.log("MISSED " + w.missed)
       console.log("MODE " + w.scheduleSettings.execution + " " + w.scheduleSettings.agent)
       console.log("KINDS " + w.agentKinds.join(","))
       console.log("MODEL " + w.scheduleSettings.model + " " + w.modelChoices.join(","))

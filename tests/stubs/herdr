@@ -5,6 +5,8 @@
 #   herdr-down       server not running (the systemctl stub's `start` removes it)
 #   start-outcome    blocked | taken   (agent start: blocked at startup / name taken once)
 #   prompt-outcome   done | idle | blocked | working | vanish | stalled   (default done)
+#                    stall-enter    first prompt stalls with the text left in the input box; Enter submits it
+#                    stall-resubmit first prompt stalls and is lost; a second prompt works
 #   list-fail        `workspace list` / `agent list` exit 124 (query timeout)
 set -euo pipefail
 printf 'herdr %s [HERDR_SESSION=%s]\n' "$*" "${HERDR_SESSION-<unset>}" >>"$STUB_LOG"
@@ -59,6 +61,15 @@ case "$1 $2" in
     printf '%s\n' "$text" >"$STUB_DIR/prompt.$name"
     printf '%s\n' "${@:5}" >"$STUB_DIR/prompt-args.$name"
     outcome=$(cat "$STUB_DIR/prompt-outcome" 2>/dev/null || echo done)
+    if [[ $outcome == stall-* ]]; then
+      if [[ " ${*:5} " == *" --wait "* ]]; then
+        if [[ $outcome == stall-enter ]]; then [[ -f $STUB_DIR/paste-collapsed ]] && text="[Pasted text #1 +5 lines]"; printf '%s\n' "$text" >"$STUB_DIR/input-box.$name"; fi
+        echo '{"error":{"code":"agent_prompt_stalled","message":"agent prompt produced no observed state change within 5000 ms; status is idle and state_change_seq remained 1"}}' >&2; exit 1
+      fi
+      [[ $outcome == stall-resubmit ]] && save "$agents" "map(if .name==\"$name\" then .agent_status=\"working\" else . end)"
+      echo '{"result":{"type":"agent_prompted"}}'; exit 0
+    fi
+    [[ $outcome == stalled && " ${*:5} " != *" --wait "* ]] && { echo '{"result":{"type":"agent_prompted"}}'; exit 0; }
     case $outcome in
       vanish) save "$agents" "map(select(.name != \"$name\"))"; save "$panes" "map(select(.pane_id != \"$(jq -r --arg n "$name" '.[] | select(.name==$n) | .pane_id' "$agents")\"))"
               echo '{"error":{"code":"agent_not_found","message":"agent target not found"}}' >&2; exit 1 ;;
@@ -70,7 +81,24 @@ case "$1 $2" in
     esac ;;
   "agent read")
     jq -e --arg n "$3" '.[] | select(.name==$n)' "$agents" >/dev/null || { echo '{"error":{"code":"agent_not_found"}}' >&2; exit 1; }
-    echo "TRANSCRIPT of $3" ;;
+    echo "TRANSCRIPT of $3"
+    [[ -f $STUB_DIR/input-box.$3 ]] && printf '❯ %s\n' "$(cat "$STUB_DIR/input-box.$3")" || true ;;
+  "agent send-keys")
+    if [[ -f $STUB_DIR/input-box.$3 && " ${*:4} " == *" enter "* ]]; then
+      rm "$STUB_DIR/input-box.$3"
+      save "$agents" "map(if .name==\"$3\" then .agent_status=\"working\" else . end)"
+    fi
+    echo '{"result":{"type":"ok"}}' ;;
+  "agent wait")
+    name=$3; shift 3; want=" "
+    while (($#)); do case "$1" in --until) want+="$2 "; shift 2 ;; *) shift ;; esac; done
+    st=$(jq -r --arg n "$name" '.[] | select(.name==$n) | .agent_status' "$agents")
+    # a working agent finishes while being waited on
+    if [[ $st == working && $want != *" working "* ]]; then
+      st=done; save "$agents" "map(if .name==\"$name\" then .agent_status=\"done\" else . end)"
+    fi
+    if [[ $want == *" $st "* ]]; then printf '{"result":{"type":"agent_status","agent":{"name":"%s","agent_status":"%s"}}}\n' "$name" "$st"
+    else echo '{"error":{"code":"timeout","message":"timed out waiting for agent status"}}' >&2; exit 1; fi ;;
   "agent focus") echo '{"result":{"type":"agent_info"}}' ;;
   "session attach") echo "ATTACHED $3" ;;
   *) echo "herdr stub: unhandled $*" >&2; exit 1 ;;
