@@ -1047,6 +1047,7 @@ cmd_disable() {
 finalize_run() {
   local run_id="$1" task="$2" patch="$3"
   local end
+  FINALIZING=1 # tells run_task's kill trap the normal path owns the entry
   end=$(now)
   lock
   apply "$RUNS" --argjson id "$run_id" --argjson end "$end" --argjson patch "$patch" '
@@ -1136,13 +1137,15 @@ run_task() {
   run_id=$(jq -r '.nextRunId' "$RUNS")
   apply "$RUNS" \
     --argjson id "$run_id" --arg task "$name" --arg trig "$trigger" \
-    --argjson start "$start" --arg sid "$sid" --arg backend "$execution" '
+    --argjson start "$start" --arg sid "$sid" --arg backend "$execution" \
+    --argjson pid "$BASHPID" --arg boot "$(boot_id)" '
     .nextRunId = ($id + 1)
     | .runs += [{
         id: $id, task: $task, trigger: $trig, start: $start, end: null,
         status: "running", exit_code: null, session_id: (if $sid == "" then null else $sid end),
         permission_mode: null, model: null, worktree_path: null, worktree_branch: null, cwd: null,
-        backend: $backend, reason: null, pane_id: null, tab_id: null, workspace_id: null, agent_name: null
+        backend: $backend, reason: null, pane_id: null, tab_id: null, workspace_id: null, agent_name: null,
+        pid: $pid, boot_id: $boot
       }]
   '
   unlock
@@ -1150,11 +1153,33 @@ run_task() {
   local log_file="$STATE_DIR/logs/${run_id}.out"
   (umask 077 && : >"$log_file")
 
+  # Killed (logout, stop, Ctrl-C): finalize as failed with what is known so
+  # far. Once finalize_run has started, the normal path owns the entry. Bash
+  # runs this only after a foreground child exits; under systemd the whole
+  # cgroup is signaled, so sleep / herdr children die with us.
+  local run_dir="" wt_path="" wt_branch="" base_commit=""
+  FINALIZING=""
+  HERDR_PANE="" HERDR_TAB="" HERDR_WS="" HERDR_AGENT=""
+  on_kill() {
+    trap '' TERM INT HUP
+    [[ -n $FINALIZING ]] && return
+    echo "omaroutines: run killed" >>"$log_file"
+    finalize_run "$run_id" "$name" "$(jq -nc --arg rd "${run_dir:-$cwd}" --arg pane "$HERDR_PANE" \
+      --arg tab "$HERDR_TAB" --arg ws "$HERDR_WS" --arg agent "$HERDR_AGENT" '
+      def nn: if . == "" then null else . end;
+      {exit_code: 1, status: "failure", reason: "killed", cwd: $rd, pane_id: ($pane | nn),
+       tab_id: ($tab | nn), workspace_id: ($ws | nn), agent_name: ($agent | nn)}')"
+    exit 1
+  }
+  trap on_kill TERM INT HUP
+
   # A missed run usually fires the moment the machine wakes, before the
   # network, auth, and herdr are usable; give them time to settle.
   if [[ $trigger == missed ]] && ((RESUME_DELAY > 0)); then
     echo "omaroutines: missed run, waiting ${RESUME_DELAY}s for the system to settle" >>"$log_file"
-    sleep "$RESUME_DELAY"
+    # backgrounded + wait: a trapped signal interrupts wait, not sleep
+    sleep "$RESUME_DELAY" &
+    wait $! || true
   fi
 
   # A run that never launches an agent: log the message, record the reason.
@@ -1193,7 +1218,7 @@ run_task() {
     return 1
   fi
 
-  local run_dir="$cwd" wt_path="" wt_branch="" base_commit=""
+  run_dir="$cwd"
   if [[ $worktree_enabled == true ]]; then
     local stamp
     stamp=$(date -d "@$start" +%Y%m%d-%H%M%S)
@@ -1210,6 +1235,11 @@ run_task() {
       return 1
     fi
     run_dir="$wt_path"
+    # On record now, so a killed run's worktree still reaches `prune`.
+    lock
+    apply "$RUNS" --argjson id "$run_id" --arg wp "$wt_path" --arg wb "$wt_branch" --arg base "$base_commit" '
+      .runs |= map(if .id == $id then .worktree_path = $wp | .worktree_branch = $wb | .base_commit = $base else . end)'
+    unlock
   fi
 
   local exit_code status reason="" pane="" tab="" ws="" agent_name=""
@@ -1287,8 +1317,34 @@ run_task() {
     prune_task_panes "$name" >>"$log_file" 2>&1
     set -e
   fi
+  trap - TERM INT HUP
   echo "$run_id $status"
   [[ $status == success ]]
+}
+
+boot_id() { cat /proc/sys/kernel/random/boot_id; }
+
+# Fail "running" entries whose process is gone without finalizing (SIGKILL,
+# or a trap that never ran): another boot, or a dead pid. Legacy entries (no
+# pid) only when provably dead: started before this boot, or a herdr run past
+# the longest herdr timeout plus slack (headless runs have no bound).
+resolve_orphans() {
+  local btime max_min id task pid
+  btime=$(awk '/^btime/ {print $2}' /proc/stat)
+  max_min=$(jq -r --argjson s "$(setting herdr_timeout_minutes)" '[.tasks[].herdr_timeout // 0, $s] | max' "$TASKS")
+  while IFS=$'\t' read -r id task pid; do
+    [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null && continue
+    echo "omaroutines: run process gone; marked orphaned" >>"$STATE_DIR/logs/$id.out"
+    finalize_run "$id" "$task" '{"status": "failure", "reason": "orphaned", "exit_code": 1}'
+    echo "$task: run $id orphaned"
+  done < <(jq -r --arg boot "$(boot_id)" --argjson btime "$btime" --argjson now "$(now)" \
+    --argjson limit "$((max_min * 60 + RESUME_DELAY + 600))" '
+    .runs[] | select(.status == "running")
+    | if .pid != null then
+        if .boot_id != $boot then [.id, .task, ""] else [.id, .task, .pid] end
+      elif .start < $btime or (.backend == "herdr" and $now - .start > $limit) then [.id, .task, ""]
+      else empty end
+    | map(tostring) | @tsv' "$RUNS")
 }
 
 remove_worktree() {
@@ -1364,6 +1420,7 @@ cmd_sweep() {
   ensure_store
   local sweep_now
   sweep_now=$(now)
+  resolve_orphans || true
   resolve_waiting || true
 
   local due
@@ -1688,7 +1745,7 @@ cmd_prune() {
     git -C "$repo" branch -D "$wt_branch" >/dev/null 2>&1 || true
     clear_worktree_record "$id"
     echo "pruned: $wt_path"
-  done < <(jq -r '.runs[] | select(.worktree_path != null and .pane_id == null) | [.id, .worktree_path, (.worktree_branch // "null")] | @tsv' "$RUNS")
+  done < <(jq -r '.runs[] | select(.worktree_path != null and .pane_id == null and .status != "running") | [.id, .worktree_path, (.worktree_branch // "null")] | @tsv' "$RUNS")
 }
 
 # settings | settings get <key> | settings set <key> <value>
