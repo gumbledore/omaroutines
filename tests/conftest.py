@@ -154,7 +154,7 @@ def stub_dir(tmp_path):
 
 @pytest.fixture
 def cli(state_home, config_home, calls_dir, fake_claude_bin, claude_home, notify_log, fake_notify_bin, default_agent_bin, stub_dir):
-    def run(*args, env_overrides=None):
+    def run(*args, env_overrides=None, background=False):
         env = dict(os.environ)
         env["XDG_STATE_HOME"] = str(state_home)
         env["XDG_CONFIG_HOME"] = str(config_home)
@@ -175,6 +175,9 @@ def cli(state_home, config_home, calls_dir, fake_claude_bin, claude_home, notify
         env.pop("OMAROUTINES_NOW", None)
         if env_overrides:
             env.update(env_overrides)
+        if background:  # own session, so a test can signal the whole tree (as systemd does)
+            return subprocess.Popen([str(CLI), *args], env=env, start_new_session=True,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return subprocess.run(
             [str(CLI), *args],
             capture_output=True,
