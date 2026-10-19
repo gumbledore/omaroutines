@@ -17,8 +17,12 @@ primitives as `gumbledore.reminders`.
 ## Key directories
 
 - `docs/design.md` — source of truth for scope and architecture
-- `bin/omaroutines` — the CLI, sole writer of `~/.local/state/omaroutines/{tasks,runs}.json`
+- `bin/omaroutines` — the CLI entry point (constants, `usage`, dispatch), sole writer of `~/.local/state/omaroutines/{tasks,runs}.json`
   and `~/.config/omaroutines/settings.json`
+- `lib/` — function libraries sourced by the CLI: `core.sh` (store, time, validation,
+  settings), `herdr.sh` (herdr backend), `commands.sh` (add/edit/rm/list…),
+  `run.sh` (run_task, sweep, backlog, orphan/waiting reconciliation, log/resume/attach),
+  `prune.sh` (worktree pruning, `settings` command)
 - `defaults/settings.json` — shipped settings (execution backend, agent, herdr knobs), merged on read
 - `systemd/` — `omaroutines-sweep.{timer,service}` (every-minute sweep) and
   `omaroutines-herdr.service` (background herdr session, started on the first herdr run)

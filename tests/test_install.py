@@ -2,6 +2,7 @@
 units and symlinks go, state and the herdr session directory stay."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -72,6 +73,32 @@ def test_install_from_marketplace_clone_location(tmp_path):
     assert plugin.is_dir() and not plugin.is_symlink()
     assert (home / ".local" / "bin" / "omaroutines").resolve() == plugin / "bin" / "omaroutines"
     assert (home / ".config" / "systemd" / "user" / "omaroutines-sweep.timer").is_symlink()
+
+
+def test_cli_runs_via_path_symlink_from_clone(tmp_path):
+    """The PATH symlink must find lib/ next to the clone's real bin/."""
+    home = tmp_path / "home"
+    plugin = home / ".config" / "omarchy" / "plugins" / "gumbledore.omaroutines"
+    plugin.mkdir(parents=True)
+    subprocess.run(["git", "clone", "-q", str(REPO_ROOT), str(plugin)], check=True, capture_output=True)
+    for rel in ("install.sh", "bin", "lib"):  # test the working tree, not HEAD
+        src, dst = REPO_ROOT / rel, plugin / rel
+        if src.is_dir():
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    env = _env(tmp_path, home)
+    r = subprocess.run(["/bin/bash", str(plugin / "install.sh")], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    cli = home / ".local" / "bin" / "omaroutines"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    r = subprocess.run([str(cli), "--help"], capture_output=True, text=True, env=env, cwd=elsewhere)
+    assert r.returncode == 0 and "Usage:" in r.stdout, r.stderr
+    r = subprocess.run([str(cli), "list", "--json"], capture_output=True, text=True, env=env, cwd=elsewhere)
+    assert r.returncode == 0, r.stderr
+    assert (home / ".local" / "state" / "omaroutines" / "tasks.json").exists()
 
 
 def test_install_from_elsewhere_links_plugin(tmp_path):
