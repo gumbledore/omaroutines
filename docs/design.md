@@ -9,6 +9,8 @@ untracked); this file carries the decisions an implementer needs.
 Mirrors `~/.config/omarchy/plugins/gumbledore.reminders` (`rem`) exactly:
 
 - `bin/omaroutines` — single bash+jq CLI, **sole writer** of all JSON state.
+  Function bodies live in `lib/*.sh` (core, herdr, commands, run, prune),
+  sourced from the entry point's symlink-resolved path; still one process.
   Every write: `flock` on `$STATE_DIR/.lock` → `jq` filter → temp file →
   atomic `mv` (`rem`'s `apply()`).
 - `systemd/omaroutines-sweep.{timer,service}` — `--user` oneshot,
